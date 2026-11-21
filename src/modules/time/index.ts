@@ -67,7 +67,7 @@ export const createTimeModule: ModuleFactory = () => {
   }, icon("chevronDown", 13));
   const presence = h("div", { class: "tt-presence" }, presenceDot, presenceText, checkButton, checkMore);
   const timerButton = h("button", { class: "btn primary tt-timer-btn", type: "button", onclick: () => void timerAction() });
-  const bar = h("header", { class: "tt-bar" },
+  const bar = h("header", { class: "tt-titlebar" },
     h("div", { class: "tt-heading" },
       h("span", { class: "tt-heading-icon" }, icon("stopwatch", 20)),
       h("div", { class: "tt-heading-text" }, h("h1", null, "Time Tracking"), h("p", { class: "tt-sub" }, "Track work, breaks, prayer, and meetings"))),

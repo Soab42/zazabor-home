@@ -644,10 +644,18 @@ pub fn serve_frame(request: Request<Vec<u8>>, responder: UriSchemeResponder) {
         if crate::lock::is_locked() {
             return responder.respond(crate::protocol::error(StatusCode::FORBIDDEN, "locked"));
         }
-        let after = url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
-            .find(|(key, _)| key == "after")
-            .and_then(|(_, value)| value.parse().ok())
-            .unwrap_or(0);
+        let query: Vec<(String, String)> =
+            url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes()).into_owned().collect();
+        let find = |name: &str| query.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+        if find("info").is_some() {
+            let socket = frame::socket_info().map_or(String::new(), |(port, token)| format!(",\"port\":{port},\"token\":\"{token}\""));
+            return responder.respond(frame::json_response(format!("{{\"stats\":{}{socket}}}", frame::stats_enabled())));
+        }
+        if let Some(line) = find("stat") {
+            eprintln!("VSTAT page {line}");
+            return responder.respond(frame::json_response("{}".into()));
+        }
+        let after = find("after").and_then(|value| value.parse().ok()).unwrap_or(0);
         let response: Response<Vec<u8>> = frame::response(after);
         responder.respond(response)
     });

@@ -1,9 +1,16 @@
 import type { VideoSurface } from "./api";
+import { frameInfo, VideoStats } from "./stats";
 
 /**
- * The video canvas: fetches decoded I420 frames from `cs://localhost/frame?after=N` and draws
- * them with WebGL2 (BT.709 limited range → RGB), letterboxed on black. The shader also applies
- * the picture effects of the side panel's Video tab (`VideoFx`, see `FxSurface`).
+ * The video canvas: receives decoded I420 frames and draws them with WebGL2 (BT.709 limited range
+ * → RGB), letterboxed on black. The shader also applies the picture effects of the side panel's
+ * Video tab (`VideoFx`, see `FxSurface`).
+ *
+ * Frames arrive over one long-lived WebSocket to the backend (`frame?info=1` tells where), each
+ * stamped with the moment libVLC presented it. They wait in a short queue and are drawn on the
+ * display's refresh (requestAnimationFrame) nearest that moment plus a small fixed delay, so a
+ * late request or a busy main thread no longer shows as judder. If the socket cannot be used, the
+ * page falls back to asking `cs://localhost/frame?after=N` for one frame at a time.
  */
 
 // Custom schemes are exposed as http://<scheme>.localhost on Windows and <scheme>://localhost elsewhere.
@@ -206,6 +213,16 @@ void main(){
 }`;
 
 const HEADER_BYTES = 16;
+/** The socket's frames carry the presentation time (an f64, ms on the backend's clock) after the header. */
+const SOCKET_HEADER_BYTES = 24;
+/** Frames waiting for their moment: more than this and the oldest are dropped (a stalled page catches up). */
+const MAX_QUEUE = 6;
+/** How long a frame waits after it arrived at its quickest, to absorb delivery jitter (ms). */
+const PRESENT_DELAY_MS = 24;
+/** A frame may go out this much before its moment: it only shows at the next refresh anyway. */
+const VSYNC_SLACK_MS = 6;
+/** Socket attempts that fail before the page gives up on it and polls over HTTP. */
+const SOCKET_ATTEMPTS = 3;
 /** How long to wait before asking again after "no new frame" and after a failed request. */
 const IDLE_DELAY_MS = 30;
 const ERROR_DELAY_MS = 200;
@@ -597,10 +614,13 @@ export function createVideoSurface(): FxSurface {
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+  const stats = new VideoStats();
+  /** HTTP fallback: one request per frame, drawn as soon as it arrives. */
   async function pump(mine: number) {
     let after = 0;
     while (running && mine === generation) {
       let response: Response;
+      const asked = performance.now();
       try {
         abort = new AbortController();
         response = await fetch(`${BASE}frame?after=${after}`, { cache: "no-store", signal: abort.signal });
@@ -623,12 +643,113 @@ export function createVideoSurface(): FxSurface {
       if (!running || mine !== generation || buffer.byteLength < HEADER_BYTES) continue;
       const [width, height, , counter] = new Uint32Array(buffer, 0, 4);
       // A new file restarts nothing (the counter only grows), but guard against a stale reply.
+      stats.arrived(performance.now() - asked, after && counter > after + 1 ? counter - after - 1 : 0);
       after = counter;
       if (!width || !height || buffer.byteLength < HEADER_BYTES + (width * height * 3) / 2) continue;
       last = { width, height, data: new Uint8Array(buffer, HEADER_BYTES) };
       frameCounter = counter;
       draw(last, true);
+      stats.shownFrame(true);
     }
+  }
+
+  // ---- the socket and the presenter ------------------------------------------------------------
+
+  interface Queued {
+    frame: Frame;
+    /** performance.now() time at which the frame should go on screen. */
+    due: number;
+    counter: number;
+  }
+  let socket: WebSocket | null = null;
+  let queue: Queued[] = [];
+  let presentFrame = 0;
+  let lastCounter = 0;
+  /** Recent (arrival − backend timestamp) samples; their minimum is the clock offset plus the fastest delivery. */
+  const offsets: number[] = [];
+  let failures = 0;
+
+  function clockOffset(sample: number): number {
+    offsets.push(sample);
+    if (offsets.length > 180) offsets.shift();
+    let min = Infinity;
+    for (const v of offsets) if (v < min) min = v;
+    return min;
+  }
+
+  function onSocketFrame(buffer: ArrayBuffer) {
+    if (buffer.byteLength < SOCKET_HEADER_BYTES) return;
+    const view = new DataView(buffer);
+    const width = view.getUint32(0, true), height = view.getUint32(4, true), counter = view.getUint32(12, true);
+    const stamp = view.getFloat64(16, true);
+    if (!width || !height || buffer.byteLength < SOCKET_HEADER_BYTES + (width * height * 3) / 2) return;
+    const now = performance.now();
+    const base = clockOffset(now - stamp);
+    stats.arrived(now - stamp - base, lastCounter && counter > lastCounter + 1 ? counter - lastCounter - 1 : 0);
+    lastCounter = counter;
+    queue.push({ frame: { width, height, data: new Uint8Array(buffer, SOCKET_HEADER_BYTES) }, due: stamp + base + PRESENT_DELAY_MS, counter });
+    if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
+    if (!presentFrame && !disposed) presentFrame = requestAnimationFrame(present);
+  }
+
+  /** On each refresh: draws the newest frame whose moment has come; frames before it are skipped. */
+  function present(now: number) {
+    presentFrame = 0;
+    if (disposed) return;
+    let pick = -1;
+    for (let i = 0; i < queue.length; i++) if (queue[i].due <= now + VSYNC_SLACK_MS) pick = i;
+    if (pick >= 0) {
+      const item = queue[pick];
+      stats.skipped(pick);
+      queue = queue.slice(pick + 1);
+      last = item.frame;
+      frameCounter = item.counter;
+      const t0 = performance.now();
+      draw(last, true);
+      if (stats.on) gl?.finish();
+      stats.drawCost(performance.now() - t0);
+      stats.shownFrame(true);
+    }
+    stats.tick(now);
+    if (queue.length) presentFrame = requestAnimationFrame(present);
+  }
+
+  function openSocket(mine: number) {
+    void frameInfo().then((info) => {
+      if (!running || mine !== generation) return;
+      if (!info.port || !info.token) return void pump(mine);
+      let opened = false;
+      const ws = new WebSocket(`ws://127.0.0.1:${info.port}/?t=${info.token}`);
+      socket = ws;
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => {
+        opened = true;
+        failures = 0;
+      };
+      ws.onmessage = (e) => {
+        if (running && mine === generation && e.data instanceof ArrayBuffer) onSocketFrame(e.data);
+      };
+      ws.onclose = () => {
+        if (socket === ws) socket = null;
+        if (!running || mine !== generation) return;
+        if (!opened && ++failures >= SOCKET_ATTEMPTS) return void pump(mine);
+        setTimeout(() => running && mine === generation && openSocket(mine), opened ? 100 : ERROR_DELAY_MS);
+      };
+    });
+  }
+
+  function closeSocket() {
+    const ws = socket;
+    socket = null;
+    if (ws) {
+      ws.onclose = null;
+      ws.close();
+    }
+    queue = [];
+    cancelAnimationFrame(presentFrame);
+    presentFrame = 0;
+    offsets.length = 0;
+    lastCounter = 0;
   }
 
   return {
@@ -638,17 +759,19 @@ export function createVideoSurface(): FxSurface {
     start() {
       if (running || disposed) return;
       running = true;
-      void pump(++generation);
+      openSocket(++generation);
     },
     stop() {
       running = false;
       abort?.abort();
+      closeSocket();
     },
     get pixelSize() {
       return pixelSize;
     },
     clear() {
       last = null;
+      queue = [];
       renderer?.clear();
     },
     dispose() {
@@ -656,6 +779,8 @@ export function createVideoSurface(): FxSurface {
       disposed = true;
       running = false;
       abort?.abort();
+      closeSocket();
+      stats.dispose();
       observer.disconnect();
       cancelAnimationFrame(liveFrame);
       tracked.clear();

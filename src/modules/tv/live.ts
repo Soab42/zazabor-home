@@ -1,7 +1,7 @@
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import { errorText, FREE_BD_PLAYLIST, newId, onTv, picUrl, tvApi, type Channel } from "./api";
-import { hueOf, notice, type TvCtx } from "./parts";
+import { hued, notice, type TvCtx } from "./parts";
 
 const initials = (name: string) => name.replace(/\(.*?\)/g, "").trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("");
 
@@ -31,7 +31,7 @@ export class LivePage {
     const refresh = h("button", { class: "tv-pill glass", type: "button", "data-tv-focus": "", title: "Read the playlists again" }, icon("refresh", 16), "Refresh");
     refresh.addEventListener("click", () => void this.refreshLists());
     this.el = h("div", { class: "tv-browse tv-live" },
-      h("header", { class: "tv-page-head" }, h("div", { class: "tv-page-title" }, h("h1", null, "Live TV"), h("p", null, "Channels from your own playlists"), this.count), h("label", { class: "tv-search glass" }, icon("search", 18), input), refresh),
+      h("header", { class: "tv-page-head" }, h("div", { class: "tv-page-title" }, h("h1", null, "Live TV"), h("p", null, "Channels from your own playlists"), this.count), h("div", { class: "tv-page-tools" }, h("label", { class: "tv-search glass" }, icon("search", 18), input), refresh)),
       this.chips, this.body);
     this.logoIo = new IntersectionObserver((entries) => {
       for (const entry of entries) {
@@ -136,11 +136,11 @@ export class LivePage {
 
   private tile(ch: Channel, context: Channel[]): HTMLElement {
     const logo = h("img", { class: "tv-chan-logo", alt: "", draggable: false });
-    const mark = h("span", { class: "tv-chan-initials", style: { "--h": String(hueOf(ch.name)) } }, initials(ch.name));
+    const mark = hued(h("span", { class: "tv-chan-initials" }, initials(ch.name)), ch.name);
     const face = h("span", { class: "tv-chan-face" }, mark, logo);
     if (ch.logo) {
       logo.src = picUrl(ch.logo);
-      face.classList.add("has-img");
+      face.classList.add("tv-has-img");
     }
     const star = h("button", { class: `tv-star${ch.fav ? " on" : ""}`, type: "button", tabindex: -1, title: ch.fav ? "Remove from favourites" : "Add to favourites", "aria-label": "Favourite", "aria-pressed": String(ch.fav) }, icon(ch.fav ? "starFilled" : "star", 15));
     star.addEventListener("click", (e) => {
@@ -172,7 +172,7 @@ export class LivePage {
   private play(ch: Channel, context: Channel[]) {
     ch.watched = Date.now();
     void tvApi.liveWatched(ch.id);
-    this.ctx.shell.open({ kind: "video", path: ch.url, siblings: context.map((c) => c.url) });
+    this.ctx.shell.open({ kind: "video", path: ch.url, siblings: context.map((c) => c.url), title: ch.name, titles: context.map((c) => c.name) });
   }
 
   private pumpLogos() {
@@ -185,7 +185,7 @@ export class LivePage {
         for (const tile of this.el.querySelectorAll<HTMLElement>(`[data-id="${ch.id}"]`)) {
           const img = tile.querySelector<HTMLImageElement>(".tv-chan-logo");
           if (img) img.src = picUrl(path);
-          tile.querySelector(".tv-chan-face")?.classList.add("has-img");
+          tile.querySelector(".tv-chan-face")?.classList.add("tv-has-img");
         }
       }, () => undefined).finally(() => {
         this.logoActive--;

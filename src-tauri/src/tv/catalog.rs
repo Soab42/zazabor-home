@@ -56,6 +56,10 @@ pub struct Item {
     pub size: i64,
     /// The poster's file in the cache, when it is there.
     pub poster: Option<String>,
+    /// The card-sized copy of the poster, when there is one (small posters have none).
+    pub poster_thumb: Option<String>,
+    /// The qualities this title comes in (720p and 1080p folders hold the same film once).
+    pub qualities: Vec<String>,
     /// Looked at and the folder has no picture: don't ask again.
     pub no_poster: bool,
     pub added: i64,
@@ -75,6 +79,8 @@ pub struct Filter {
     /// "new" (server time), "az", "year", "rank" or "played".
     pub sort: Option<String>,
     pub played: bool,
+    /// Instead of a page: every folder of this title (its qualities), ungrouped.
+    pub same_as: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -164,6 +170,21 @@ pub fn keep_categories(conn: &Connection, urls: &[String]) {
     let _ = conn.execute(&format!("DELETE FROM items WHERE category_url NOT IN ({marks})"), params_from_iter(urls.iter()));
 }
 
+/// Which folder of a title shows first: 1080p, then 4K, 720p, 480p, the rest.
+const QUALITY_RANK: &str = "CASE quality WHEN '1080p' THEN 0 WHEN '2160p' THEN 1 WHEN '720p' THEN 2 WHEN '480p' THEN 3 ELSE 4 END";
+/// What makes two folders one title: its name, year, kind and section.
+const GROUP_KEY: &str = "lower(title), COALESCE(year,0), kind, section";
+
+fn quality_rank(q: &str) -> u8 {
+    match q {
+        "1080p" => 0,
+        "2160p" => 1,
+        "720p" => 2,
+        "480p" => 3,
+        _ => 4,
+    }
+}
+
 const COLUMNS: &str = "id,title,year,quality,tags,kind,section,category,category_url,folder_url,video_url,size,poster,resolved,added,rank,played";
 
 fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
@@ -171,6 +192,14 @@ fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
     let poster: String = r.get(12)?;
     let resolved: i64 = r.get(13)?;
     let there = !poster.is_empty() && Path::new(&poster).exists();
+    let thumb = there.then(|| super::crawl::thumb_path(Path::new(&poster))).filter(|t| t.exists()).map(|t| t.to_string_lossy().into_owned());
+    let mut qualities: Vec<String> = Vec::new();
+    for q in r.get::<_, Option<String>>(17).ok().flatten().unwrap_or_default().split(',').filter(|q| !q.is_empty()) {
+        if !qualities.iter().any(|x| x == q) {
+            qualities.push(q.to_string());
+        }
+    }
+    qualities.sort_by_key(|q| quality_rank(q));
     Ok(Item {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -179,13 +208,15 @@ fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
         tags: tags.split(',').filter(|t| !t.is_empty()).map(String::from).collect(),
         kind: r.get(5)?,
         section: r.get(6)?,
-        category: r.get(7)?,
+        category: super::names::clean_label(&r.get::<_, String>(7)?),
         category_url: r.get(8)?,
         folder_url: r.get(9)?,
         video_url: r.get(10)?,
         size: r.get(11)?,
         no_poster: poster.is_empty() && resolved == 1,
         poster: there.then_some(poster),
+        poster_thumb: thumb,
+        qualities,
         added: r.get(14)?,
         rank: r.get(15)?,
         played: r.get(16)?,
@@ -243,9 +274,11 @@ fn where_clause(f: &Filter, with_year: bool, with_quality: bool) -> (String, Vec
     (if parts.is_empty() { String::new() } else { format!(" WHERE {}", parts.join(" AND ")) }, args)
 }
 
+/// A page of titles: the folders of one film in several qualities come out as one title (the
+/// best quality first), with `qualities` listing them all.
 pub fn query(conn: &Connection, f: &Filter) -> Result<(Vec<Item>, i64)> {
     let (clause, args) = where_clause(f, true, true);
-    let total: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM items{clause}"), params_from_iter(args.iter()), |r| r.get(0)).map_err(db_err)?;
+    let total: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM (SELECT 1 FROM items{clause} GROUP BY {GROUP_KEY})"), params_from_iter(args.iter()), |r| r.get(0)).map_err(db_err)?;
     let order = match f.sort.as_deref() {
         Some("az") => "title COLLATE NOCASE ASC, year DESC",
         Some("year") => "COALESCE(year,0) DESC, added DESC",
@@ -253,10 +286,24 @@ pub fn query(conn: &Connection, f: &Filter) -> Result<(Vec<Item>, i64)> {
         Some("played") => "played DESC",
         _ => "added DESC, title COLLATE NOCASE ASC",
     };
-    let sql = format!("SELECT {COLUMNS} FROM items{clause} ORDER BY {order} LIMIT {} OFFSET {}", f.limit.unwrap_or(60).clamp(1, 2000), f.offset.unwrap_or(0).max(0));
+    let sql = format!(
+        "WITH g AS (SELECT {COLUMNS}, ROW_NUMBER() OVER (PARTITION BY {GROUP_KEY} ORDER BY {QUALITY_RANK}, added DESC) AS rn, group_concat(quality, ',') OVER (PARTITION BY {GROUP_KEY}) AS qs FROM items{clause})
+         SELECT {COLUMNS}, qs FROM g WHERE rn=1 ORDER BY {order} LIMIT {} OFFSET {}",
+        f.limit.unwrap_or(60).clamp(1, 2000),
+        f.offset.unwrap_or(0).max(0)
+    );
     let mut stmt = conn.prepare(&sql).map_err(db_err)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), item_from_row).map_err(db_err)?;
     Ok((rows.filter_map(|r| r.ok()).collect(), total))
+}
+
+/// Every folder of the same title as `id` (its 720p, 1080p, ... versions), the best quality first.
+pub fn variants(conn: &Connection, id: &str) -> Result<Vec<Item>> {
+    let Some(item) = get(conn, id) else { return Ok(Vec::new()) };
+    let sql = format!("SELECT {COLUMNS} FROM items WHERE lower(title)=lower(?1) AND COALESCE(year,0)=COALESCE(?2,0) AND kind=?3 AND section=?4 ORDER BY {QUALITY_RANK}, added DESC");
+    let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+    let rows = stmt.query_map(params![item.title, item.year, item.kind, item.section], item_from_row).map_err(db_err)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// The years and qualities a filter's titles have (ignoring the filter's own year and quality).
@@ -278,10 +325,10 @@ pub fn facets(conn: &Connection, f: &Filter) -> Result<(Vec<(i32, i64)>, Vec<(St
 /// (url, label, section, kind, count) of the categories that have titles.
 pub fn categories(conn: &Connection) -> Result<Vec<(String, String, String, String, i64)>> {
     let mut stmt = conn
-        .prepare("SELECT category_url,category,section,MIN(kind),COUNT(*) FROM items GROUP BY category_url ORDER BY MAX(added) DESC")
+        .prepare("SELECT category_url,category,section,MIN(kind),COUNT(DISTINCT lower(title)||COALESCE(year,0)) FROM items GROUP BY category_url ORDER BY MAX(added) DESC")
         .map_err(db_err)?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(db_err)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.filter_map(|r| r.ok()).map(|(u, l, s, k, n): (String, String, String, String, i64)| (u, super::names::clean_label(&l), s, k, n)).collect())
 }
 
 pub fn set_resolved(conn: &Connection, id: &str, r: &Resolved) -> Result<()> {
@@ -391,6 +438,22 @@ mod tests {
         assert_eq!(categories(&c).unwrap().len(), 3);
         keep_categories(&c, &["http://h/IMDb/".to_string()]);
         assert_eq!(count(&c), 2);
+    }
+
+    #[test]
+    fn qualities_of_one_title_group() {
+        let mut c = mem();
+        let mut low = new("Anaconda", 2025, 20, "English 720p");
+        low.quality = "720p".into();
+        upsert(&mut c, &[low, new("Anaconda", 2025, 10, "English 1080p"), new("Zodiac", 2007, 5, "English 1080p")], 1).unwrap();
+        let (items, total) = query(&c, &Filter::default()).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[0].title.as_str(), items[0].quality.as_str(), items[0].qualities.clone()), ("Anaconda", "1080p", vec!["1080p".to_string(), "720p".to_string()]));
+        let (only, n) = query(&c, &Filter { quality: Some("720p".into()), ..Default::default() }).unwrap();
+        assert_eq!((n, only[0].quality.as_str()), (1, "720p"));
+        let all = variants(&c, &items[0].id).unwrap();
+        assert_eq!(all.iter().map(|i| i.quality.as_str()).collect::<Vec<_>>(), vec!["1080p", "720p"]);
     }
 
     #[test]

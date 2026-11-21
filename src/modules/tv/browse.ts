@@ -51,7 +51,7 @@ export class BrowsePage {
           void this.load();
         }, 120);
       });
-      head.append(h("label", { class: "tv-search glass" }, icon("search", 18), this.input));
+      head.append(h("div", { class: "tv-page-tools" }, h("label", { class: "tv-search glass" }, icon("search", 18), this.input)));
     }
     this.drawSort();
     this.el = h("div", { class: "tv-browse" }, head, options.extra, h("div", { class: "tv-filters" }, this.chips, this.sortBar), this.grid, this.sentinel);

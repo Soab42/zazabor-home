@@ -135,7 +135,7 @@ export class LibraryView {
       "header",
       { class: "topbar" },
       this.back,
-      h("div", { class: "lib-heading" }, this.title, this.subtitle),
+      h("div", { class: "gal-heading" }, this.title, this.subtitle),
       this.favoriteButton,
       this.hideButton,
       this.selectButton,

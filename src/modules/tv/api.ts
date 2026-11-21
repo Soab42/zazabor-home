@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fileUrl } from "../../api";
 import type { TvSettings } from "../../config";
+import { isPhone } from "./phone";
 
 /**
  * TV's page side: typed wrappers for the `tv_*` commands (the Rust side is `src-tauri/src/tv`).
@@ -33,6 +34,10 @@ export interface Item {
   size: number;
   /** A file in the cache (or, in the mock, a data: URL). */
   poster: string | null;
+  /** A card-sized copy of the poster (480 px wide); null when the poster is small or not there. */
+  posterThumb: string | null;
+  /** Every quality the title comes in (its 1080p and 720p folders are one title here). */
+  qualities: string[];
   noPoster: boolean;
   added: number;
   rank: number | null;
@@ -67,6 +72,8 @@ export interface Filter {
   quality?: string;
   sort?: "new" | "az" | "year" | "rank" | "played";
   played?: boolean;
+  /** Instead of a page: every folder of this title (its qualities). */
+  sameAs?: string;
   limit?: number;
   offset?: number;
 }
@@ -154,8 +161,8 @@ export const FREE_BD_PLAYLIST = { name: "Bangladesh (iptv-org)", url: "https://i
 
 // ---- helpers ------------------------------------------------------------------------------------
 
-/** The `<img>` source of a cached poster or logo. */
-export const picUrl = (path: string) => (path.startsWith("data:") ? path : fileUrl(path));
+/** The `<img>` source of a cached poster or logo. The Android app serves them from its cache through the same `cs` scheme (`mobile-tv/src-tauri/src/lib.rs`), which Android exposes as http://cs.localhost. */
+export const picUrl = (path: string) => (path.startsWith("data:") ? path : isPhone ? `http://cs.localhost/file?p=${encodeURIComponent(path)}` : fileUrl(path));
 
 export function sizeText(bytes: number): string {
   if (!bytes) return "";
@@ -213,6 +220,7 @@ export const tvApi = {
     call<Progress>("tv_start", { portals: settings.sources.map((s) => s.url), overrides: settings.overrides, force }),
   home: () => call<Home>("tv_home"),
   items: (filter: Filter, facets = false) => call<Page>("tv_items", { filter, facets }),
+  variants: (id: string) => call<Page>("tv_items", { filter: { sameAs: id }, facets: false }).then((p) => p.items),
   resolve: (id: string) => call<Item>("tv_resolve", { id }),
   episodes: (id: string) => call<Season[]>("tv_episodes", { id }),
   played: (id: string) => call<void>("tv_played", { id }),

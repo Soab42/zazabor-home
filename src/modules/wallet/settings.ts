@@ -1,5 +1,7 @@
 import type { SettingsRow } from "../../appearance";
 import type { Config } from "../../config";
+import "./wallet.css";
+import "../time/time-module.css";
 import type { Category } from "../../shell/settings";
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";

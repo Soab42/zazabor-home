@@ -102,8 +102,8 @@ function contentSection(tools: MotionTools, template: Template, id: string, c: (
 
 /** A picture slot: a thumbnail, its file and Choose…, with Clear and Cut out product under ⋯. */
 function slotRow(tools: MotionTools, f: Field, id: string, c: () => TemplateClip, syncs: Syncs): HTMLElement {
-  const name = h("span", { class: "vc-slot-name" });
-  const thumb = h("span", { class: "vc-slot-thumb" }, icon("image", 16));
+  const name = h("span", { class: "ve-c-slot-name" });
+  const thumb = h("span", { class: "ve-c-slot-thumb" }, icon("image", 16));
   let shown = "";
   const show = () => {
     const x = c();
@@ -127,7 +127,7 @@ function slotRow(tools: MotionTools, f: Field, id: string, c: () => TemplateClip
   ];
   // Labelled above, as the text fields are: a slot's label can be long ("Product photo").
   return h("div", { class: "vc-field-block" }, h("div", { class: "vc-field-head" }, h("span", null, f.label)),
-    h("div", { class: "vc-slot-pick" }, thumb, name,
+    h("div", { class: "ve-c-slot-pick" }, thumb, name,
       h("button", { class: "btn small", type: "button", onclick: () => void tools.chooseSlot(id, f.id) }, "Choose…"),
       mini("more", `${f.label} options`, (e) => menuAt(e.currentTarget as HTMLElement, more))));
 }

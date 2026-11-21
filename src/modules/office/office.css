@@ -116,7 +116,7 @@
   .of-bs-item span { display: none; }
   .of-bs-columns, .of-bs-print { grid-template-columns: minmax(0, 1fr); }
 }
-.of-new + .of-hub-head { margin-top: 26px; margin-bottom: 10px; }
+.of-new ~ .of-hub-head { margin-top: 26px; margin-bottom: 10px; }
 .of-hub-head h2 { margin: 0; }
 .of-new { display: flex; flex-wrap: wrap; gap: 14px; }
 .of-tile {

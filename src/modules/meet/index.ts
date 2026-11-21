@@ -205,15 +205,15 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     return b;
   };
 
-  const sideButtons = h("div", { class: "mt-actions" },
-    h("button", { class: "btn primary mt-now", type: "button", onclick: () => void meetNow() }, icon("video", 17), "Meet now"),
-    h("button", { class: "mt-action", type: "button", onclick: () => void newCall() }, icon("call", 16), h("span", null, "New call")),
-    h("button", { class: "mt-action", type: "button", onclick: () => void schedule() }, icon("calendar", 16), h("span", null, "Schedule")));
-  const nav = h("nav", { class: "mt-nav", "aria-label": "Meet" });
+  const sideButtons = h("div", { class: "mtg-actions" },
+    h("button", { class: "btn primary mtg-now", type: "button", onclick: () => void meetNow() }, icon("video", 17), "Meet now"),
+    h("button", { class: "mtg-action", type: "button", onclick: () => void newCall() }, icon("call", 16), h("span", null, "New call")),
+    h("button", { class: "mtg-action", type: "button", onclick: () => void schedule() }, icon("calendar", 16), h("span", null, "Schedule")));
+  const nav = h("nav", { class: "mtg-nav", "aria-label": "Meet" });
   const navItems = new Map<View, { button: HTMLButtonElement; count: HTMLElement }>();
   for (const v of VIEWS) {
-    const count = h("span", { class: "mt-count" });
-    const b = h("button", { class: "mt-nav-item", type: "button", title: v.label }, icon(v.glyph, 17), h("span", { class: "mt-nav-label" }, v.label), count);
+    const count = h("span", { class: "mtg-count" });
+    const b = h("button", { class: "mtg-nav-item", type: "button", title: v.label }, icon(v.glyph, 17), h("span", { class: "mtg-nav-label" }, v.label), count);
     b.addEventListener("click", () => {
       view = v.id;
       draw();
@@ -221,11 +221,11 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     nav.append(b);
     navItems.set(v.id, { button: b, count });
   }
-  const side = h("aside", { class: "mt-side" }, h("h1", { class: "mt-brand" }, "Meet"), sideButtons, nav);
-  const tunnelLine = h("div", { class: "mt-tunnel" });
-  const heading = h("h2", { class: "mt-title" });
-  const body = h("div", { class: "mt-body" });
-  const main = h("div", { class: "mt-main" }, h("header", { class: "mt-head" }, heading, tunnelLine), body);
+  const side = h("aside", { class: "mtg-side" }, h("h1", { class: "mtg-brand" }, "Meet"), sideButtons, nav);
+  const tunnelLine = h("div", { class: "mtg-tunnel" });
+  const heading = h("h2", { class: "mtg-title" });
+  const body = h("div", { class: "mtg-body" });
+  const main = h("div", { class: "mtg-main" }, h("header", { class: "mtg-head" }, heading, tunnelLine), body);
   const el = h("section", { class: "meet-module" }, side, main);
   new ResizeObserver(() => {
     el.classList.toggle("narrow", el.clientWidth < 900);
@@ -237,43 +237,43 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     tunnelLine.replaceChildren();
     tunnelLine.dataset.state = t?.state ?? "off";
     if (!t) return;
-    const turnOn = h("button", { class: "mt-link-btn", type: "button", onclick: () => void tunnelOn() }, "Turn on");
+    const turnOn = h("button", { class: "mtg-link-btn", type: "button", onclick: () => void tunnelOn() }, "Turn on");
     if (t.state === "on" && t.url) {
-      const url = h("button", { class: "mt-url", type: "button", title: "Copy the address", onclick: () => void navigator.clipboard?.writeText(t.url!).then(() => toast("Address copied"), () => undefined) }, t.url);
-      tunnelLine.append(h("span", { class: "mt-dot" }), "Guests join through ", url);
+      const url = h("button", { class: "mtg-url", type: "button", title: "Copy the address", onclick: () => void navigator.clipboard?.writeText(t.url!).then(() => toast("Address copied"), () => undefined) }, t.url);
+      tunnelLine.append(h("span", { class: "mtg-dot" }), "Guests join through ", url);
     } else if (t.state === "starting") {
-      tunnelLine.append(h("span", { class: "mt-dot" }), "Starting the outside link…");
+      tunnelLine.append(h("span", { class: "mtg-dot" }), "Starting the outside link…");
     } else if (t.state === "error") {
-      tunnelLine.append(h("span", { class: "mt-dot" }), `Outside link failed${t.error ? `: ${t.error}` : ""}. `, h("button", { class: "mt-link-btn", type: "button", onclick: () => void tunnelOn() }, "Try again"));
+      tunnelLine.append(h("span", { class: "mtg-dot" }), `Outside link failed${t.error ? `: ${t.error}` : ""}. `, h("button", { class: "mtg-link-btn", type: "button", onclick: () => void tunnelOn() }, "Try again"));
     } else {
-      tunnelLine.append(h("span", { class: "mt-dot" }), "Guest link off: it starts by itself when you share a link. ", turnOn);
+      tunnelLine.append(h("span", { class: "mtg-dot" }), "Guest link off: it starts by itself when you share a link. ", turnOn);
     }
   }
 
   function empty(glyph: Parameters<typeof icon>[0], line: string, sub: string, action: HTMLElement) {
-    return h("div", { class: "mt-empty" }, h("div", { class: "mt-empty-icon" }, icon(glyph, 30)), h("strong", null, line), h("p", null, sub), action);
+    return h("div", { class: "mtg-empty" }, h("div", { class: "mtg-empty-icon" }, icon(glyph, 30)), h("strong", null, line), h("p", null, sub), action);
   }
 
   function inviteeLine(m: Meeting) {
     if (!m.invitees.length) return null;
-    return h("div", { class: "mt-people" }, ...m.invitees.map((i) => {
+    return h("div", { class: "mtg-people" }, ...m.invitees.map((i) => {
       const status = i.error ? "bad" : i.sentAt ? "sent" : "";
-      return h("span", { class: `mt-invitee ${status}`, title: i.error ?? (i.sentAt ? `${i.email}: invitation sent ${dayText(i.sentAt)} ${clockText(i.sentAt)}` : `${i.email}: not sent yet`) },
+      return h("span", { class: `mtg-invitee ${status}`, title: i.error ?? (i.sentAt ? `${i.email}: invitation sent ${dayText(i.sentAt)} ${clockText(i.sentAt)}` : `${i.email}: not sent yet`) },
         i.name || i.email, i.error ? icon("info", 12) : i.sentAt ? icon("check", 12) : null);
     }));
   }
 
   function meetingCard(m: Meeting, isPastView: boolean) {
-    const badges = h("div", { class: "mt-badges" });
+    const badges = h("div", { class: "mtg-badges" });
     if (m.live) {
-      badges.append(h("span", { class: "mt-pill live" }, h("span", { class: "mt-dot" }), "Live"), h("span", { class: "mt-pill" }, icon("users", 12), `${m.people} in the meeting`));
-      if (m.waiting) badges.append(h("span", { class: "mt-pill waiting" }, `${m.waiting} waiting`));
-      if (m.recording) badges.append(h("span", { class: "mt-pill rec" }, h("span", { class: "mt-dot" }), "REC"));
+      badges.append(h("span", { class: "mtg-pill live" }, h("span", { class: "mtg-dot" }), "Live"), h("span", { class: "mtg-pill" }, icon("users", 12), `${m.people} in the meeting`));
+      if (m.waiting) badges.append(h("span", { class: "mtg-pill waiting" }, `${m.waiting} waiting`));
+      if (m.recording) badges.append(h("span", { class: "mtg-pill rec" }, h("span", { class: "mtg-dot" }), "REC"));
     } else {
-      if (m.kind === "call") badges.append(h("span", { class: "mt-pill" }, icon("call", 12), "Call"));
-      if (m.autoRecord) badges.append(h("span", { class: "mt-pill quiet" }, icon("film", 12), "Recorded"));
+      if (m.kind === "call") badges.append(h("span", { class: "mtg-pill" }, icon("call", 12), "Call"));
+      if (m.autoRecord) badges.append(h("span", { class: "mtg-pill quiet" }, icon("film", 12), "Recorded"));
     }
-    const actions = h("div", { class: "mt-card-actions" });
+    const actions = h("div", { class: "mtg-card-actions" });
     const menu = (b: HTMLElement) => {
       const items: MenuItem[] = [];
       if (!isPastView) {
@@ -293,14 +293,14 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
       const rec = recordings.find((r) => r.meetingId === m.id);
       if (rec) actions.append(button("Recording", "film", "", () => shell.open({ kind: "video", path: rec.path })));
     }
-    const more = h("button", { class: "icon-btn mt-more", type: "button", title: "More", "aria-label": "More", onclick: () => menu(more) }, icon("more", 16));
+    const more = h("button", { class: "icon-btn mtg-more", type: "button", title: "More", "aria-label": "More", onclick: () => menu(more) }, icon("more", 16));
     actions.append(more);
-    return h("article", { class: `mt-card${m.live ? " live" : ""}` },
-      h("div", { class: "mt-card-main" },
-        h("div", { class: `mt-card-icon${m.live ? " live" : ""}` }, icon(m.kind === "call" ? "call" : "video", 20)),
-        h("div", { class: "mt-card-text" },
+    return h("article", { class: `mtg-card${m.live ? " live" : ""}` },
+      h("div", { class: "mtg-card-main" },
+        h("div", { class: `mtg-card-icon${m.live ? " live" : ""}` }, icon(m.kind === "call" ? "call" : "video", 20)),
+        h("div", { class: "mtg-card-text" },
           h("h3", null, m.title),
-          h("p", { class: "mt-when" }, whenText(m), h("span", { class: "mt-code" }, codeText(m.code))),
+          h("p", { class: "mtg-when" }, whenText(m), h("span", { class: "mtg-code" }, codeText(m.code))),
           badges.childElementCount ? badges : null,
           inviteeLine(m))),
       actions);
@@ -311,12 +311,12 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     const length = r.endedAt ? durationText((r.endedAt - r.startedAt) / 1000) : null;
     const play = button("Play", "play", "primary", () => shell.open({ kind: "video", path: r.path }));
     play.disabled = live;
-    return h("article", { class: "mt-rec" },
-      h("div", { class: "mt-thumb", onclick: () => !live && shell.open({ kind: "video", path: r.path }) }, icon("film", 30), live ? h("span", { class: "mt-pill rec" }, h("span", { class: "mt-dot" }), "REC") : length ? h("span", { class: "mt-length" }, length) : null),
-      h("div", { class: "mt-rec-text" }, h("h3", { title: r.title }, r.title), h("p", null, `${dayText(r.startedAt)} ${clockText(r.startedAt)}${length ? ` · ${length}` : ""} · ${formatBytes(r.bytes)}`)),
-      h("div", { class: "mt-card-actions" }, play,
+    return h("article", { class: "mtg-rec" },
+      h("div", { class: "mtg-thumb", onclick: () => !live && shell.open({ kind: "video", path: r.path }) }, icon("film", 30), live ? h("span", { class: "mtg-pill rec" }, h("span", { class: "mtg-dot" }), "REC") : length ? h("span", { class: "mtg-length" }, length) : null),
+      h("div", { class: "mtg-rec-text" }, h("h3", { title: r.title }, r.title), h("p", null, `${dayText(r.startedAt)} ${clockText(r.startedAt)}${length ? ` · ${length}` : ""} · ${formatBytes(r.bytes)}`)),
+      h("div", { class: "mtg-card-actions" }, play,
         button("Show in Files", "folder", "", () => shell.open({ kind: "folder", path: dirname(r.path) })),
-        h("button", { class: "icon-btn mt-more", type: "button", title: "Delete", "aria-label": "Delete recording", onclick: () => void deleteRecording(r) }, icon("trash", 16))));
+        h("button", { class: "icon-btn mtg-more", type: "button", title: "Delete", "aria-label": "Delete recording", onclick: () => void deleteRecording(r) }, icon("trash", 16))));
   }
 
   function draw() {
@@ -332,22 +332,22 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     navItems.get("upcoming")!.count.classList.toggle("alert", total > 0);
     heading.textContent = VIEWS.find((v) => v.id === view)!.label;
     drawTunnel();
-    if (!loaded) return body.replaceChildren(h("p", { class: "mt-loading" }, "Loading…"));
+    if (!loaded) return body.replaceChildren(h("p", { class: "mtg-loading" }, "Loading…"));
     if (stateError && !state) {
       return body.replaceChildren(empty("video", "Meet isn't available", stateError, button("Try Again", "refresh", "", () => void reload())));
     }
     const meetNowButton = h("button", { class: "btn primary", type: "button", onclick: () => void meetNow() }, icon("video", 15), "Meet now");
     if (view === "recordings") {
       body.replaceChildren(recordings.length
-        ? h("div", { class: "mt-grid" }, ...[...recordings].sort((a, b) => b.startedAt - a.startedAt).map(recordingCard))
+        ? h("div", { class: "mtg-grid" }, ...[...recordings].sort((a, b) => b.startedAt - a.startedAt).map(recordingCard))
         : empty("film", "No recordings yet", `Meetings record themselves, and everyone is told. They're saved to ${state?.recordingsDir ?? "your Videos folder"}.`, meetNowButton));
     } else if (view === "upcoming") {
       body.replaceChildren(up.length
-        ? h("div", { class: "mt-list" }, ...up.map((m) => meetingCard(m, false)))
+        ? h("div", { class: "mtg-list" }, ...up.map((m) => meetingCard(m, false)))
         : empty("calendar", "Nothing planned", "Start a meeting now, or schedule one and invite people by e-mail.", h("button", { class: "btn primary", type: "button", onclick: () => void schedule() }, icon("calendar", 15), "Schedule a Meeting")));
     } else {
       body.replaceChildren(done.length
-        ? h("div", { class: "mt-list" }, ...done.map((m) => meetingCard(m, true)))
+        ? h("div", { class: "mtg-list" }, ...done.map((m) => meetingCard(m, true)))
         : empty("clock", "No past meetings", "Meetings you've had will be listed here.", meetNowButton));
     }
   }

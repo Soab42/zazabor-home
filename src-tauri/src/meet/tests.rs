@@ -238,6 +238,87 @@ fn no_lobby_means_straight_in_and_bad_tokens_are_refused() {
 }
 
 #[test]
+fn chat_is_rate_limited_per_person() {
+    let f = fixture("chatrate");
+    let m = meeting(&f, false);
+    let mut a = Client::connect(f.port, &m.code, &[]);
+    a.send(hello("A", None));
+    a.expect("welcome");
+    let mut b = Client::connect(f.port, &m.code, &[]);
+    b.send(hello("B", None));
+    b.expect("welcome");
+    a.expect("peer-joined");
+    for n in 0..8 {
+        a.send(json!({"t": "chat", "text": format!("spam {n}")}));
+    }
+    a.expect("chat-slow");
+    a.send(json!({"t": "react", "emoji": "x"}));
+    // B got the first five and then the marker, nothing in between.
+    let mut chats = 0;
+    loop {
+        match b.ws.read() {
+            Ok(Message::Text(s)) => match serde_json::from_str::<Value>(s.as_str()).unwrap()["t"].as_str().unwrap() {
+                "chat" => chats += 1,
+                "react" => break,
+                _ => {}
+            },
+            other => panic!("socket ended early: {other:?}"),
+        }
+    }
+    assert_eq!(chats, 5);
+    // Once the window has passed, chatting works again.
+    std::thread::sleep(Duration::from_millis(2200));
+    a.send(json!({"t": "chat", "text": "again"}));
+    assert_eq!(b.expect("chat")["text"], "again");
+}
+
+#[test]
+fn a_dropped_guest_comes_back_in_without_knocking_again() {
+    let f = fixture("rejoin");
+    let m = meeting(&f, true);
+    let token = f.hub.host_token().to_string();
+    let mut host = Client::connect(f.port, &m.code, &[]);
+    host.send(hello("Hosty", Some(&token)));
+    host.expect("welcome");
+
+    let mut guest = Client::connect(f.port, &m.code, &[]);
+    guest.send(hello("Guesty", None));
+    guest.expect("lobby");
+    let knock = host.expect("knock");
+    host.send(json!({"t": "admit", "id": knock["id"]}));
+    let rejoin = guest.expect("welcome")["rejoin"].as_str().unwrap().to_string();
+    assert!(rejoin.len() >= 32);
+    host.expect("peer-joined");
+
+    // The connection dies; the host is told, then the same person returns under the old name.
+    drop(guest);
+    host.expect("peer-left");
+    let mut again = Client::connect(f.port, &m.code, &[]);
+    let mut h = hello("Someone else", None);
+    h["rejoin"] = json!(rejoin);
+    again.send(h);
+    let w = again.expect("welcome");
+    assert_eq!(w["name"], "Guesty");
+    assert_eq!(w["peers"][0]["name"], "Hosty");
+    host.expect("peer-joined");
+
+    // A token that isn't known (or was used) gets no shortcut: it waits in the lobby.
+    let mut stranger = Client::connect(f.port, &m.code, &[]);
+    let mut h = hello("Eve", None);
+    h["rejoin"] = json!("0123456789abcdef0123456789abcdef");
+    stranger.send(h);
+    stranger.expect("lobby");
+
+    // The old socket not yet noticed as dead is replaced rather than duplicated.
+    let mut third = Client::connect(f.port, &m.code, &[]);
+    let mut h = hello("x", None);
+    h["rejoin"] = json!(w["rejoin"]);
+    third.send(h);
+    assert_eq!(third.expect("welcome")["name"], "Guesty");
+    assert_eq!(f.hub.list().unwrap()[0].people, 2);
+}
+
+#[test]
 fn a_full_room_turns_people_away() {
     let f = fixture("full");
     let m = meeting(&f, false);

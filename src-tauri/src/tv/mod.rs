@@ -61,6 +61,8 @@ pub fn init(app: AppHandle, data_dir: PathBuf, cache_dir: PathBuf) {
             return;
         }
     };
+    // the first poster cache (downscaled copies) is gone: its titles fetch full-size ones when shown
+    let _ = std::fs::remove_dir_all(cache_dir.join("tv").join("posters"));
     let last = catalog::meta_get(&conn, "last_crawl").and_then(|v| v.parse().ok()).unwrap_or(0);
     let _ = STATE.set(State {
         app,
@@ -431,6 +433,10 @@ pub struct Page {
 #[tauri::command]
 pub fn tv_items(filter: Filter, facets: Option<bool>) -> Result<Page> {
     let db = state()?.db();
+    if let Some(id) = filter.same_as.as_deref() {
+        let items = catalog::variants(&db, id)?;
+        return Ok(Page { total: items.len() as i64, items, years: Vec::new(), qualities: Vec::new() });
+    }
     let (items, total) = catalog::query(&db, &filter)?;
     let (years, qualities) = if facets == Some(true) { catalog::facets(&db, &filter)? } else { Default::default() };
     Ok(Page { items, total, years, qualities })
@@ -455,7 +461,7 @@ pub struct CacheInfo {
 #[tauri::command]
 pub fn tv_cache_info() -> Result<CacheInfo> {
     let st = state()?;
-    let (pb, pf) = crawl::dir_size(&st.cache.join("posters"));
+    let (pb, pf) = crawl::dir_size(&st.cache.join(crawl::POSTER_DIR));
     let (lb, lf) = crawl::dir_size(&st.cache.join("logos"));
     let db = st.db();
     Ok(CacheInfo { bytes: pb + lb, files: pf + lf, items: catalog::count(&db), channels: live::list(&db).map(|c| c.len()).unwrap_or(0), cap: crawl::POSTER_CAP })
@@ -466,7 +472,7 @@ pub fn tv_cache_info() -> Result<CacheInfo> {
 #[tauri::command]
 pub fn tv_clear_cache(catalog_too: Option<bool>) -> Result<()> {
     let st = state()?;
-    for sub in ["posters", "logos"] {
+    for sub in [crawl::POSTER_DIR, "logos"] {
         let _ = std::fs::remove_dir_all(st.cache.join(sub));
     }
     let db = st.db();

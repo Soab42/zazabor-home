@@ -61,6 +61,9 @@ export class Rail {
 
   /** Puts a dot on a module's button (or takes it off), with a line for its tooltip. */
   setStatus(id: ModuleId, status: RailStatus | null) {
+    // The same status again changes nothing (and must not rebuild the dot, which restarts its pulse).
+    const before = this.statuses.get(id);
+    if (before?.tone === status?.tone && before?.title === status?.title) return;
     if (status) this.statuses.set(id, status);
     else this.statuses.delete(id);
     this.showStatus(id);

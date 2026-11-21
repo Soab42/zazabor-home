@@ -28,10 +28,13 @@
   const hhmm = (t) => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
   const duration = (s) => (s >= 3600 ? Math.floor(s / 3600) + ':' : '') + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60);
   const initial = (name) => (Array.from((name || '?').trim())[0] || '?');
+  const toastTimers = new Map();
   const toast = (text, ms = 3500) => {
-    const t = el('div', 'toast', text);
-    $('toasts').append(t);
-    setTimeout(() => t.remove(), ms);
+    // The same message twice (a flood of rejected chat lines) stays one toast, kept a little longer.
+    let t = [...$('toasts').children].find((c) => c.textContent === text);
+    if (!t) { t = el('div', 'toast', text); $('toasts').append(t); }
+    clearTimeout(toastTimers.get(t));
+    toastTimers.set(t, setTimeout(() => { t.remove(); toastTimers.delete(t); }, ms));
   };
   // Icons: the same stroke style as the app (src/ui/icons.ts).
   const ICONS = {
@@ -72,6 +75,10 @@
   let joinedAt = 0;
   let recOn = false;
   let leaving = false;
+  // After a dropped connection: when to give up (30 s), the token that gets us back in unasked.
+  let rejoinToken = '';
+  let reconnect = null;
+  let reconnectTimer = 0;
 
   const local = {
     audio: null, video: null, screen: null, micOn: true, camOn: true, hand: false,
@@ -264,19 +271,42 @@
   let pingTimer = 0;
   function connect() {
     leaving = false;
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/' + code);
+    const sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/' + code);
+    ws = sock;
     ws.onopen = () => {
-      send({ t: 'hello', name: myName, host: hostToken || undefined, audio: !!(local.audio && local.micOn), video: !!local.video });
+      send({ t: 'hello', name: myName, host: hostToken || undefined, rejoin: reconnect ? rejoinToken : undefined, audio: !!(local.audio && local.micOn), video: !!local.video });
       clearInterval(pingTimer);
       pingTimer = setInterval(() => send({ t: 'ping' }), 20000);
     };
     ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } onMessage(m); };
     ws.onclose = () => {
+      if (ws !== sock) return;
       clearInterval(pingTimer);
       if (leaving || $('over').hidden === false) return;
-      teardown();
-      over('Connection lost', 'The connection to the meeting dropped. Check your internet and join again.');
+      dropped();
     };
+  }
+
+  // The socket dropped: from inside the room, keep trying for 30 s (the server lets us straight back in).
+  function dropped() {
+    if (!reconnect) {
+      if (!rejoinToken) { teardown(); over('Connection lost', 'The connection to the meeting dropped. Check your internet and join again.'); return; }
+      reconnect = { until: Date.now() + 30000 };
+      teardown();
+      $('reconnecting').hidden = false;
+    }
+    if (Date.now() > reconnect.until) {
+      stopReconnect();
+      over('Connection lost', 'The connection to the meeting dropped. Check your internet and join again.');
+      return;
+    }
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { if (reconnect) connect(); }, 1500);
+  }
+  function stopReconnect() {
+    reconnect = null;
+    clearTimeout(reconnectTimer);
+    $('reconnecting').hidden = true;
   }
 
   function over(title, text) {
@@ -300,6 +330,7 @@
       case 'peer-state': onPeerState(m); break;
       case 'signal': { const p = peers.get(m.from); if (p) p.chain = p.chain.then(() => onSignal(p, m.data)); break; }
       case 'chat': onChat(m); break;
+      case 'chat-slow': toast('You’re sending messages too fast. Wait a moment.'); break;
       case 'react': onReact(m); break;
       case 'mute-request': if (local.audio && local.micOn) { local.micOn = false; local.audio.enabled = false; paintControls(); paintSelf(); sendState(); toast('The host asked you to mute.'); } break;
       case 'rec': setRec(m.on); break;
@@ -311,18 +342,22 @@
 
   function finish(title, text) {
     leaving = true;
+    stopReconnect();
     teardown();
     try { ws && ws.close(); } catch (_) { /* closed */ }
     over(title, text);
   }
 
   function onWelcome(m) {
+    const back = !!reconnect;
+    if (back) { stopReconnect(); toast('Reconnected'); }
+    rejoinToken = m.rejoin || '';
     myId = m.id;
     myName = m.name || myName;
     isHost = !!m.host;
     meeting = m.meeting;
     rtcConfig = { iceServers: m.ice || [] };
-    joinedAt = Date.now();
+    if (!back) joinedAt = Date.now();
     show('room');
     $('roomTitle').textContent = meeting.title;
     $('bEnd').hidden = !isHost;
@@ -944,6 +979,7 @@
 
   function leave() {
     leaving = true;
+    stopReconnect();
     teardown();
     try { ws && ws.close(); } catch (_) { /* closed */ }
     for (const t of [local.audio, local.video]) if (t) t.stop();

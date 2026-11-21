@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "dev:mobile": "vite --config vite.mobile.config.ts",
-    "build:mobile": "tsc --noEmit && vite build --config vite.mobile.config.ts"
+    "build:mobile": "tsc --noEmit && vite build --config vite.mobile.config.ts",
+    "dev:mobile-tv": "vite --config vite.mobile-tv.config.ts",
+    "build:mobile-tv": "tsc --noEmit && vite build --config vite.mobile-tv.config.ts"
   },
   "dependencies": {
     "@ironcalc/wasm": "0.9.1",

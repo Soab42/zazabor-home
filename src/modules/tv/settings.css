@@ -14,3 +14,7 @@
 }
 .tv-input:focus-visible { box-shadow: inset 0 0 0 1.5px var(--focus); }
 .tv-input::placeholder { color: var(--faint); }
+/* the explanation and the buttons keep clear of the group's edges */
+.tv-set-box > .sf-hint:first-child { margin-top: var(--space-3); }
+.tv-set-box > .tv-set-buttons.end { padding-bottom: var(--space-3); }
+.tv-set-box > .tv-set-section:first-child { margin-top: var(--space-3); }

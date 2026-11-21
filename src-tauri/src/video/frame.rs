@@ -12,6 +12,39 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// The frames of the open player; the route reads this without touching the player lock.
 static CURRENT: Mutex<Option<Arc<Frames>>> = Mutex::new(None);
 
+/// `ZAZABOR_VIDEO_STATS=1` logs the decoder's frame pacing and what the page reports (see
+/// `serve_frame`) to stderr every two seconds.
+pub fn stats_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ZAZABOR_VIDEO_STATS").is_some_and(|v| v == "1"))
+}
+
+/// Intervals between `display` callbacks (the decoder's presentation clock), in microseconds.
+static DISPLAY_TIMES: Mutex<(Option<std::time::Instant>, Vec<u32>)> = Mutex::new((None, Vec::new()));
+
+fn note_display() {
+    let now = std::time::Instant::now();
+    let mut times = lock_ignore_poison(&DISPLAY_TIMES);
+    if let Some(last) = times.0 {
+        let gap = now.duration_since(last).as_micros() as u32;
+        times.1.push(gap);
+    }
+    times.0 = Some(now);
+    if times.1.iter().map(|&g| g as u64).sum::<u64>() >= 2_000_000 {
+        let mut gaps = std::mem::take(&mut times.1);
+        gaps.sort_unstable();
+        let p = |q: f64| gaps[((gaps.len() as f64 * q) as usize).min(gaps.len() - 1)] as f64 / 1000.0;
+        let total: u64 = gaps.iter().map(|&g| g as u64).sum();
+        eprintln!(
+            "VSTAT decoder {:.1} fps, gap p50 {:.1} p95 {:.1} max {:.1} ms",
+            gaps.len() as f64 * 1e6 / total as f64,
+            p(0.5),
+            p(0.95),
+            p(1.0)
+        );
+    }
+}
+
 /// How long a request waits for a new picture before answering "nothing new".
 const LONG_POLL: Duration = Duration::from_millis(250);
 /// The chroma code in the frame header (1 = planar I420).
@@ -59,6 +92,8 @@ struct FrameState {
     back: Vec<u8>,
     front: Vec<u8>,
     counter: u64,
+    /// When `front` was handed to us for display (libVLC calls `display` at presentation time).
+    shown_ms: f64,
 }
 
 pub struct Frames {
@@ -79,6 +114,7 @@ impl Frames {
                 back: Vec::new(),
                 front: Vec::new(),
                 counter: SEQUENCE.load(Ordering::Relaxed),
+                shown_ms: 0.0,
             }),
             ready: Condvar::new(),
         }
@@ -149,19 +185,36 @@ pub unsafe extern "C" fn unlock(_opaque: *mut c_void, _picture: *mut c_void, _pl
 
 pub unsafe extern "C" fn display(opaque: *mut c_void, _picture: *mut c_void) {
     let frames = frames_of(opaque);
-    let mut state = lock_ignore_poison(&frames.state);
-    let state = &mut *state;
-    std::mem::swap(&mut state.back, &mut state.front);
-    state.counter = SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-    frames.ready.notify_all();
+    {
+        let mut guard = lock_ignore_poison(&frames.state);
+        let state = &mut *guard;
+        std::mem::swap(&mut state.back, &mut state.front);
+        state.counter = SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+        state.shown_ms = now_ms();
+        frames.ready.notify_all();
+    }
+    if stats_enabled() {
+        note_display();
+    }
 }
 
-/// Header plus the planes repacked tightly for the visible size (drops the pitch padding).
-fn pack(state: &FrameState) -> Vec<u8> {
+/// Milliseconds on this process's monotonic clock (the page paces frames against it).
+fn now_ms() -> f64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// Header plus the planes repacked tightly for the visible size (drops the pitch padding). The
+/// socket stream's header is 8 bytes longer: the presentation time as an f64 in milliseconds.
+fn pack_into(state: &FrameState, body: &mut Vec<u8>, timed: bool) {
     let (w, h, pitch) = (state.width as usize, state.height as usize, state.pitch as usize);
     let (u, v, _) = plane_layout(state.pitch, state.height);
-    let mut body = Vec::with_capacity(16 + w * h * 3 / 2);
+    body.clear();
+    body.reserve(24 + w * h * 3 / 2);
     body.extend_from_slice(&header(state.width, state.height, state.counter));
+    if timed {
+        body.extend_from_slice(&state.shown_ms.to_le_bytes());
+    }
     for (offset, stride, width, rows) in [(0, pitch, w, h), (u, pitch / 2, w / 2, h / 2), (v, pitch / 2, w / 2, h / 2)] {
         if stride == width {
             body.extend_from_slice(&state.front[offset..offset + width * rows]);
@@ -172,6 +225,11 @@ fn pack(state: &FrameState) -> Vec<u8> {
             }
         }
     }
+}
+
+fn pack(state: &FrameState) -> Vec<u8> {
+    let mut body = Vec::new();
+    pack_into(state, &mut body, false);
     body
 }
 
@@ -182,6 +240,17 @@ fn empty(status: StatusCode) -> Response<Vec<u8>> {
         .header("Cache-Control", "no-store")
         .body(Vec::new())
         .expect("static response")
+}
+
+/// A small JSON answer.
+pub fn json_response(body: String) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", "no-store")
+        .body(body.into_bytes())
+        .expect("json response")
 }
 
 /// The newest frame after `after`, waiting briefly for one; 204 when there is nothing new.
@@ -208,6 +277,104 @@ pub fn response(after: u64) -> Response<Vec<u8>> {
         .header("Cache-Control", "no-store")
         .body(body)
         .expect("frame response")
+}
+
+/// The page connects here (see `socket_info`): one long-lived WebSocket per window carries every
+/// frame as it is shown, instead of a request per frame.
+static SOCKET: std::sync::OnceLock<Option<(u16, String)>> = std::sync::OnceLock::new();
+
+/// A random token the page must present, so no other local program or web page reads the picture.
+fn make_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    (0..2)
+        .map(|_| format!("{:016x}", std::collections::hash_map::RandomState::new().build_hasher().finish()))
+        .collect()
+}
+
+/// Starts the frame socket on first use; its port and token, None when it could not listen.
+pub fn socket_info() -> Option<(u16, String)> {
+    SOCKET
+        .get_or_init(|| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).ok()?;
+            let port = listener.local_addr().ok()?.port();
+            let token = make_token();
+            let wanted = token.clone();
+            std::thread::Builder::new()
+                .name("vframe-accept".into())
+                .spawn(move || {
+                    for stream in listener.incoming().flatten() {
+                        let token = wanted.clone();
+                        let _ = std::thread::Builder::new().name("vframe-socket".into()).spawn(move || serve_socket(stream, &token));
+                    }
+                })
+                .ok()?;
+            Some((port, token))
+        })
+        .clone()
+}
+
+/// Whether a page at this Origin belongs to the app (its own scheme, or the dev server).
+fn origin_ok(origin: Option<&str>) -> bool {
+    let Some(origin) = origin else { return true };
+    let host = origin.split("://").nth(1).unwrap_or("");
+    let host = host.split('/').next().unwrap_or("");
+    let name = host.rsplit_once(':').filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit())).map_or(host, |(name, _)| name);
+    origin.starts_with("tauri://") || name == "localhost" || name == "127.0.0.1" || name.ends_with(".localhost")
+}
+
+/// Pushes the newest frame to one connected page until it goes away.
+fn serve_socket(stream: std::net::TcpStream, token: &str) {
+    use tungstenite::handshake::server::{ErrorResponse, Request, Response as Reply};
+    use tungstenite::Message;
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let check = |request: &Request, reply: Reply| -> Result<Reply, ErrorResponse> {
+        let origin = request.headers().get("origin").and_then(|v| v.to_str().ok());
+        let query = request.uri().query().unwrap_or("");
+        let presented = url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "t").map(|(_, v)| v.into_owned());
+        if origin_ok(origin) && presented.as_deref() == Some(token) {
+            Ok(reply)
+        } else {
+            let mut refusal = ErrorResponse::new(None);
+            *refusal.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+            Err(refusal)
+        }
+    };
+    let Ok(mut ws) = tungstenite::accept_hdr(stream, check) else { return };
+    let (mut after, mut buffer) = (0u64, Vec::new());
+    let mut quiet = 0;
+    loop {
+        if crate::lock::is_locked() {
+            return;
+        }
+        let current = lock_ignore_poison(&CURRENT).clone();
+        let Some(frames) = current else {
+            std::thread::sleep(Duration::from_millis(50));
+            quiet += 1;
+            if quiet % 40 == 0 && ws.send(Message::Ping(Vec::new().into())).is_err() {
+                return;
+            }
+            continue;
+        };
+        let state = lock_ignore_poison(&frames.state);
+        let (state, _) = frames.ready.wait_timeout_while(state, LONG_POLL, |s| s.counter <= after).unwrap_or_else(|e| e.into_inner());
+        if state.counter <= after || state.width == 0 {
+            drop(state);
+            // A paused picture sends nothing; a ping finds out whether the page is still there.
+            quiet += 1;
+            if quiet % 8 == 0 && ws.send(Message::Ping(Vec::new().into())).is_err() {
+                return;
+            }
+            continue;
+        }
+        pack_into(&state, &mut buffer, true);
+        after = state.counter;
+        drop(state);
+        quiet = 0;
+        if ws.send(Message::Binary(std::mem::take(&mut buffer).into())).is_err() {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -258,7 +425,7 @@ mod tests {
         }
         front[u..u + 2].copy_from_slice(&[50, 51]);
         front[v..v + 2].copy_from_slice(&[60, 61]);
-        let state = FrameState { width: w, height: h, pitch, back: Vec::new(), front, counter: 7 };
+        let state = FrameState { width: w, height: h, pitch, back: Vec::new(), front, counter: 7, shown_ms: 0.0 };
         let body = pack(&state);
         assert_eq!(body.len(), 16 + 12);
         assert_eq!(&body[16..], &[10, 11, 12, 13, 14, 15, 16, 17, 50, 51, 60, 61]);

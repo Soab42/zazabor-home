@@ -40,9 +40,11 @@ body.dropping::after { content: "Drop a folder or a file to open it"; }
   background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
   box-shadow: inset -0.5px 0 0 var(--line-strong);
 }
-.rail-mark { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 16px; }
+.rail-mark { flex: none; display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 16px; }
 .rail-mark img { display: block; border-radius: 7px; box-shadow: 0 0 0 0.5px var(--line-strong), 0 2px 8px rgba(0, 0, 0, 0.25); }
-.rail-items { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.rail-items { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+.rail-items::-webkit-scrollbar { display: none; }
+.rail > .rail-btn { flex: none; }
 .rail-btn {
   position: relative; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
   border: 0; border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer;
@@ -58,6 +60,13 @@ body.dropping::after { content: "Drop a folder or a file to open it"; }
   transition: opacity 0.18s, transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 .rail-btn.active .rail-pill { opacity: 1; transform: translateY(-50%) scaleY(1); }
+/* A short window (a 1280x800 laptop): tighter buttons, so every module and Settings stay reachable. */
+@media (max-height: 900px) {
+  .rail { padding: 10px 0 8px; }
+  .rail-mark { height: 32px; margin-bottom: 8px; }
+  .rail-items { gap: 2px; }
+  .rail-btn { width: 38px; height: 38px; border-radius: 10px; }
+}
 /* A module's status (Time: checked in, a timer running): green, amber while on a break. */
 .rail-dot {
   --dot: #30c35a;
@@ -70,8 +79,10 @@ body.dropping::after { content: "Drop a folder or a file to open it"; }
 .rail-dot.on { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dot), 0 0 0 2px var(--glass-strong, rgba(0, 0, 0, 0.4)); }
 .rail-dot.live::after {
   content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--dot);
-  animation: rail-dot-pulse 2s var(--ease-out) infinite;
+  animation: rail-dot-pulse 2s steps(12, end) infinite;
 }
+/* a window nobody is looking at keeps no animation running */
+.window-idle .rail-dot.live::after, .window-idle .spinner, .window-idle .tv-shimmer::after, .window-idle .tv-shimmer-line::after, .window-idle .tv-status.spin svg , .window-idle .tt-pulse::after, .window-idle .mtg-dot, .window-idle .wl-pair-dot, .window-idle .pl-ring-pulse::after, .window-idle .rec-bar-dot, .window-idle .pl-welcome-wave, .window-idle .icon-btn.spinning .icon { animation-play-state: paused; }
 @keyframes rail-dot-pulse { from { opacity: 0.7; transform: scale(1); } to { opacity: 0; transform: scale(2.6); } }
 @media (prefers-reduced-motion: reduce) { .rail-dot.live::after { animation: none; } }
 
@@ -113,7 +124,7 @@ body.dropping::after { content: "Drop a folder or a file to open it"; }
 .st-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.015em; }
 .st-page { flex: 1; min-height: 0; overflow-y: auto; padding: 0 32px 48px; }
 .st-page > * { max-width: 740px; }
-.st-page .sf-group:first-child { margin-top: 0; }
+.st-page .sf-group:first-child, .st-page > [hidden]:first-child + .sf-group { margin-top: 0; }
 .st-page .sf-group legend { padding: 0 2px; margin-bottom: 8px; }
 
 /* A group is an inset card of hairline-separated rows. */
@@ -291,5 +302,6 @@ input.switch:disabled { opacity: 0.45; cursor: default; }
 /* Settings → Notes: a hint over its controls, which line up on the right. */
 .st-card .st-notes-row .st-inline { justify-content: flex-end; flex-wrap: wrap; }
 .st-card .st-notes-row .st-value { min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-card .st-notes-row > .st-value { justify-self: end; }
 .st-card .st-notes-row select { width: auto; }
 .st-value.st-error { max-width: 420px; color: var(--danger); white-space: normal; overflow-wrap: anywhere; }

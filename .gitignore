@@ -12,3 +12,5 @@ dist-release/
 .env.release
 dist-mobile/
 mobile/src-tauri/target/
+dist-mobile-tv/
+mobile-tv/src-tauri/target/

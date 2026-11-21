@@ -24,7 +24,7 @@
 
 /* ---- bar */
 
-.tt-bar {
+.tt-titlebar {
   position: relative; z-index: 3; flex: none; display: flex; align-items: center; gap: 10px;
   height: 64px; padding: 0 16px 0 20px;
   background: var(--glass-surface, var(--glass)); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
@@ -217,7 +217,7 @@
   .tt-card .tt-chip-icon svg { width: 12px; height: 12px; }
   .tt-card .tt-stat-label { grid-area: label; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tt-card-value { grid-area: value; font-size: 15px; }
-  .tt-bar { gap: 8px; padding: 0 12px 0 14px; }
+  .tt-titlebar { gap: 8px; padding: 0 12px 0 14px; }
   .tt-heading-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .tt-timer-more { display: none; }
   .tt-range { flex: 1 0 100%; }

@@ -22,7 +22,14 @@ export const hueOf = (text: string) => {
   return n;
 };
 
-export const meta = (item: Item) => [item.year ? String(item.year) : "", item.kind === "series" ? "Series" : "", item.quality, sizeText(item.size)].filter(Boolean).join(" · ");
+/** "2026 · Series · 1080p / 720p"; `size` adds the file size (known only once the folder was read). */
+/** Sets the `--h` hue the poster-less gradients use (`h()` can't set custom properties through `style`). */
+export const hued = <T extends HTMLElement>(el: T, text: string): T => {
+  el.style.setProperty("--h", String(hueOf(text)));
+  return el;
+};
+
+export const meta = (item: Item, size = false) => [item.year ? String(item.year) : "", item.kind === "series" ? "Series" : "", item.qualities?.length ? item.qualities.join(" / ") : item.quality, size ? sizeText(item.size) : ""].filter(Boolean).join(" · ");
 
 /** Quality and the notable tags as small pills. */
 export function badges(item: Item, max = 4): HTMLElement {
@@ -81,7 +88,7 @@ export class PosterLoader {
   }
 
   private pump() {
-    while (this.active < 4 && this.queue.length) {
+    while (this.active < 6 && this.queue.length) {
       const item = this.queue.shift()!;
       this.active++;
       tvApi.resolve(item.id).then((done) => this.refresh([done]), () => undefined).finally(() => {
@@ -102,14 +109,17 @@ export interface CardOptions {
 
 /** One title: a poster that lifts on hover or focus, with a caption below. */
 export function card(item: Item, ctx: TvCtx, options: CardOptions = {}): HTMLElement {
-  const img = h("img", { class: "tv-img", alt: "", draggable: false, decoding: "async" });
-  const fallback = h("span", { class: "tv-fallback", style: { "--h": String(hueOf(item.title)) } }, h("span", { class: "tv-fallback-title" }, item.title), item.year ? h("span", { class: "tv-fallback-year" }, String(item.year)) : null);
+  const img = h("img", { class: "tv-img", alt: "", draggable: false, decoding: "async", loading: "lazy" });
+  img.sizes = "(min-width: 1700px) 240px, 190px";
+  const fallback = hued(h("span", { class: "tv-fallback" }, h("span", { class: "tv-fallback-title" }, item.title), item.year ? h("span", { class: "tv-fallback-year" }, String(item.year)) : null), item.title);
   const poster = h("div", { class: "tv-poster" }, fallback, img);
   const apply = (next: Item) => {
     if (next.poster && img.dataset.src !== next.poster) {
       img.dataset.src = next.poster;
-      img.onload = () => poster.classList.add("has-img");
-      img.src = picUrl(next.poster);
+      img.onload = () => poster.classList.add("tv-has-img");
+      // the 480 px copy is sharp enough for a card even on a HiDPI screen; the original backs it up for wide cards
+      if (next.posterThumb) img.srcset = `${picUrl(next.posterThumb)} 480w, ${picUrl(next.poster)} 800w`;
+      img.src = picUrl(next.posterThumb ?? next.poster);
     }
     item = Object.assign(item, next);
   };
@@ -127,15 +137,8 @@ export function card(item: Item, ctx: TvCtx, options: CardOptions = {}): HTMLEle
     const r = face.getBoundingClientRect();
     face.style.setProperty("--mx", `${((e.clientX - r.left) / r.width) * 100}%`);
     face.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
-    // a gentle tilt towards the pointer, 6 degrees at the edges
-    face.style.setProperty("--ry", `${(((e.clientX - r.left) / r.width - 0.5) * 12).toFixed(2)}deg`);
-    face.style.setProperty("--rx", `${((0.5 - (e.clientY - r.top) / r.height) * 12).toFixed(2)}deg`);
   });
-  face.addEventListener("pointerleave", () => {
-    face.style.removeProperty("--rx");
-    face.style.removeProperty("--ry");
-  });
-  const caption = h("span", { class: "tv-caption" }, h("span", { class: "tv-caption-title" }, item.title), h("span", { class: "tv-caption-meta" }, meta(item)));
+  const caption = h("span", { class: "tv-caption", title: item.title }, h("span", { class: "tv-caption-title" }, item.title), h("span", { class: "tv-caption-meta" }, meta(item)));
   const root = h("div", { class: `tv-item${options.rank ? " ranked" : ""}`, role: "listitem" }, options.rank ? h("span", { class: "tv-rank", "aria-hidden": "true" }, String(options.rank)) : null, h("div", { class: "tv-stack" }, face, caption));
   if (item.poster) apply(item);
   ctx.loader.watch(root, item, apply);
@@ -144,7 +147,7 @@ export function card(item: Item, ctx: TvCtx, options: CardOptions = {}): HTMLEle
 
 /** Cards of a shelf while the catalog loads. */
 export function skeletonShelf(title: string, count = 8): HTMLElement {
-  return h("section", { class: "tv-shelf skeleton", "aria-busy": "true" }, h("header", { class: "tv-shelf-head" }, h("h2", null, title)), h("div", { class: "tv-row" }, ...Array.from({ length: count }, () => h("div", { class: "tv-item" }, h("div", { class: "tv-stack" }, h("div", { class: "tv-card shimmer" }), h("span", { class: "tv-caption shimmer-line" }))))));
+  return h("section", { class: "tv-shelf skeleton", "aria-busy": "true" }, h("header", { class: "tv-shelf-head" }, h("h2", null, title)), h("div", { class: "tv-row" }, ...Array.from({ length: count }, () => h("div", { class: "tv-item" }, h("div", { class: "tv-stack" }, h("div", { class: "tv-card tv-shimmer" }), h("span", { class: "tv-caption tv-shimmer-line" }))))));
 }
 
 /** Rows fade and rise into place, card by card, the first time they scroll into view. */
@@ -154,7 +157,7 @@ const reveal = new IntersectionObserver((entries) => {
     entry.target.classList.add("in");
     reveal.unobserve(entry.target);
   }
-}, { rootMargin: "0px 0px -6% 0px", threshold: 0.05 });
+}, { rootMargin: "0px 0px 25% 0px", threshold: 0 });
 
 export interface ShelfOptions extends CardOptions {
   numbered?: boolean;

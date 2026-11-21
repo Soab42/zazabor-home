@@ -242,6 +242,23 @@ pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// A category label as the front page words it, tidied: "English Movies -1080p" and
+/// "Animation Movies 1080p" read "English Movies (1080p)" and "Animation Movies (1080p)".
+pub fn clean_label(label: &str) -> String {
+    let t = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some((base, last)) = t.rsplit_once(' ') else { return t };
+    let q = last.trim_start_matches(['-', '–', '—']);
+    let digits = q.strip_suffix('p').or_else(|| q.strip_suffix('P')).map_or(false, |d| (3..=4).contains(&d.len()) && d.chars().all(|c| c.is_ascii_digit()));
+    if !(digits || q.eq_ignore_ascii_case("4k")) {
+        return t;
+    }
+    let base = base.trim_end_matches(|c: char| c == '-' || c == '–' || c == '—' || c == ':' || c.is_whitespace());
+    if base.is_empty() {
+        return t;
+    }
+    format!("{base} ({})", q.to_lowercase().replace("4k", "4K"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +357,15 @@ mod tests {
         let mut v = vec!["Season 10", "Season 2", "Season 1"];
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, vec!["Season 1", "Season 2", "Season 10"]);
+    }
+
+    #[test]
+    fn labels_are_tidied() {
+        assert_eq!(clean_label("English Movies -1080p"), "English Movies (1080p)");
+        assert_eq!(clean_label("Animation Movies 1080p"), "Animation Movies (1080p)");
+        assert_eq!(clean_label("English  Movies - 720p"), "English Movies (720p)");
+        assert_eq!(clean_label("English Movies (1080p)"), "English Movies (1080p)");
+        assert_eq!(clean_label("IMDb Top 250"), "IMDb Top 250");
+        assert_eq!(clean_label("Hindi"), "Hindi");
     }
 }

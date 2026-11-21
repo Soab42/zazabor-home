@@ -13,13 +13,13 @@
 .sb-add:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
 .sb-empty { margin: 0; padding: 2px 10px 4px; color: var(--faint); font-size: var(--text-sm); }
 
-.sb-item.offline .sb-icon, .sb-item.offline .sb-name { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease-out); }
-.sb-item.offline:hover .sb-icon, .sb-item.offline:hover .sb-name { opacity: 0.9; }
-.sb-item.busy { cursor: progress; }
+.fs-sidebar .sb-item.offline .sb-icon, .fs-sidebar .sb-item.offline .sb-name { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease-out); }
+.fs-sidebar .sb-item.offline:hover .sb-icon, .fs-sidebar .sb-item.offline:hover .sb-name { opacity: 0.9; }
+.fs-sidebar .sb-item.busy { cursor: progress; }
 .sb-eject { place-items: center; width: 18px; height: 18px; border-radius: var(--radius-sm); cursor: pointer; }
 .sb-eject:hover { background: var(--hover); }
 .sb-spin { width: 12px; height: 12px; border-width: 1.5px; }
-.sb-hint { flex: 0 0 calc(100% - 34px); margin: 2px 0 0 26px; color: var(--muted); font-size: var(--text-xs); line-height: 1.35; white-space: normal; }
+.fs-sidebar .sb-hint { flex: 0 0 calc(100% - 34px); margin: 2px 0 0 26px; color: var(--muted); font-size: var(--text-xs); line-height: 1.35; white-space: normal; }
 
 /* ---- connect sheet ------------------------------------------------------------------------- */
 

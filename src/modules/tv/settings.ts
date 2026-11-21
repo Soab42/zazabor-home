@@ -1,8 +1,8 @@
 import type { SettingsRow } from "../../appearance";
 import { DEFAULT_TV_SOURCE, type Config } from "../../config";
-import { open as openDialog } from "../../shared/dialog";
 import type { Category } from "../../shell/settings";
 import { h } from "../../ui/dom";
+import { isPhone } from "./phone";
 import { errorText, FREE_BD_PLAYLIST, newId, onTv, sizeText, tvApi, type CacheInfo, type Category as TvCategory, type Progress } from "./api";
 import "./settings.css";
 
@@ -179,16 +179,17 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
     url.addEventListener("keydown", (e) => {
       if (e.key === "Enter") add();
     });
-    const choose = button("Choose a file…", async () => {
+    const choose = isPhone ? null : button("Choose a file…", async () => {
+      const { open: openDialog } = await import("../../shared/dialog");
       const path = await openDialog({ title: "Choose an M3U playlist", filters: [{ name: "Playlists", extensions: ["m3u", "m3u8"] }] });
       if (path) addPlaylist(name.value, path);
     });
     const free = button("Add free Bangladesh channels (iptv-org)", () => addPlaylist(FREE_BD_PLAYLIST.name, FREE_BD_PLAYLIST.url), "btn small primary");
     free.disabled = tv().playlists.some((p) => p.url === FREE_BD_PLAYLIST.url);
     liveBox.replaceChildren(
-      h("p", { class: "sf-hint" }, "Live TV plays channels from M3U / M3U8 playlists you add: a link or a file on this computer. If your ISP offers a live-TV playlist, add it by its URL. Nothing is added or downloaded until you do."),
+      h("p", { class: "sf-hint" }, `Live TV plays channels from M3U / M3U8 playlists you add: a link${isPhone ? "" : " or a file on this computer"}. If your ISP offers a live-TV playlist, add it by its URL. Nothing is added or downloaded until you do.`),
       ...rows,
-      h("div", { class: "tv-set-add" }, name, url, h("div", { class: "tv-set-buttons" }, choose, button("Add", add))),
+      h("div", { class: "tv-set-add" }, name, url, h("div", { class: "tv-set-buttons" }, ...(choose ? [choose] : []), button("Add", add))),
       row("Free-to-air channels", "iptv-org keeps a public index of free-to-air channels. This adds its Bangladesh list; it is read only when you press the button.", free),
       ...(tv().playlists.length ? [row("Playlists", playlistMessage || null, button("Refresh playlists", () => void readPlaylists()))] : []));
   }

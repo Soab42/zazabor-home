@@ -122,7 +122,7 @@ export class Panel {
   readonly el: HTMLElement;
   private cats: HTMLElement;
   private head = h("div", { class: "vp-head" });
-  private body = h("div", { class: "vp-body" });
+  private body = h("div", { class: "ve-p-body" });
   private tab: PanelTab;
   private tracks: BuiltinTrack[] | null = null;
   private sounds: SoundEffect[] | null = null;
@@ -252,7 +252,7 @@ export class Panel {
   private titleRow(title: string, count: string | null, ...actions: (Node | null)[]): HTMLElement {
     return h("div", { class: "vp-title-row" },
       h("h2", { class: "vp-title" }, title),
-      count ? h("span", { class: "vp-count" }, count) : null,
+      count ? h("span", { class: "ve-p-count" }, count) : null,
       h("span", { class: "spacer" }),
       ...actions);
   }
@@ -328,7 +328,7 @@ export class Panel {
     drag?: (e: DragEvent) => void; disabled?: boolean;
   }): HTMLElement {
     const el = h("div", {
-      class: `vp-tile${o.active ? " active" : ""}${o.disabled ? " disabled" : ""}${o.cls ? ` ${o.cls}` : ""}`, role: "listitem", title: o.title ?? o.name,
+      class: `ve-p-tile${o.active ? " active" : ""}${o.disabled ? " disabled" : ""}${o.cls ? ` ${o.cls}` : ""}`, role: "listitem", title: o.title ?? o.name,
       "aria-label": o.name, draggable: o.drag && !o.disabled ? "true" : "false",
       ondragstart: (e: DragEvent) => o.drag?.(e),
       onclick: () => (o.click ? o.click() : el.focus()),
@@ -340,7 +340,7 @@ export class Panel {
         openMenu(e.clientX, e.clientY, o.menu());
       },
     },
-    h("div", { class: "vp-thumb" },
+    h("div", { class: "ve-p-thumb" },
       o.thumb,
       o.badge ?? null,
       o.meta || o.used ? h("span", { class: "vp-chip" }, o.used ? h("span", { class: "vp-used", title: "On the timeline" }) : null, o.meta ?? "") : null,
@@ -352,7 +352,7 @@ export class Panel {
         },
         ondblclick: (e: MouseEvent) => e.stopPropagation(),
       }, icon("plus", 14)) : null),
-    h("div", { class: "vp-name" }, o.name));
+    h("div", { class: "ve-p-name" }, o.name));
     el.addEventListener("vp-add", () => !o.disabled && (o.add ?? o.click)?.());
     el.addEventListener("vp-preview", () => o.preview?.());
     el.addEventListener("vp-remove", () => o.remove?.());
@@ -496,7 +496,7 @@ export class Panel {
         h("button", { class: "btn small primary", type: "button", onclick: () => this.host.importFiles("any") }, icon("plus", 14), "Import…"))));
     } else if (!media.length) {
       body.push(q ? this.noMatches() : h("div", { class: "vc-none" }, this.mediaFilter === "unused" ? "Every file is on the timeline." : "Nothing of this kind yet."));
-    } else body.push(this.grid("vp-grid", media.map((m) => this.mediaTile(m, used)), "Media"));
+    } else body.push(this.grid("ve-p-grid", media.map((m) => this.mediaTile(m, used)), "Media"));
     return [head, body];
   }
 
@@ -504,7 +504,7 @@ export class Panel {
 
   private audioRow(o: { path: string; title: string; sub: string; add: () => void; idle?: IconName; drag?: (e: DragEvent) => void; remove?: () => void; missing?: boolean; menu?: () => MenuItem[] }): HTMLElement {
     const el = h("div", {
-      class: `vp-row${o.missing ? " disabled" : ""}`, role: "listitem", "aria-label": o.title, draggable: o.drag ? "true" : "false",
+      class: `ve-p-row${o.missing ? " disabled" : ""}`, role: "listitem", "aria-label": o.title, draggable: o.drag ? "true" : "false",
       ondragstart: (e: DragEvent) => o.drag?.(e),
       ondblclick: () => !o.missing && o.add(),
       oncontextmenu: (e: MouseEvent) => {
@@ -513,9 +513,9 @@ export class Panel {
         openMenu(e.clientX, e.clientY, o.menu?.() ?? [{ label: "Add at Playhead", icon: "plus", shortcut: "Enter", action: o.add }]);
       },
     },
-    o.missing ? h("span", { class: "vp-listen" }, icon("music", 14)) : this.listenButton(o.path, o.title, "vp-listen", o.idle ?? "play"),
-    h("div", { class: "vp-row-text" }, h("div", { class: "vp-row-title" }, o.title), h("div", { class: "vp-row-sub" }, o.sub)),
-    o.missing ? null : mini("plus", `Add ${o.title} at the playhead`, o.add, "vp-row-add"));
+    o.missing ? h("span", { class: "ve-p-listen" }, icon("music", 14)) : this.listenButton(o.path, o.title, "ve-p-listen", o.idle ?? "play"),
+    h("div", { class: "ve-p-row-text" }, h("div", { class: "ve-p-row-title" }, o.title), h("div", { class: "ve-p-row-sub" }, o.sub)),
+    o.missing ? null : mini("plus", `Add ${o.title} at the playhead`, o.add, "ve-p-row-add"));
     el.addEventListener("vp-add", () => !o.missing && o.add());
     el.addEventListener("vp-preview", () => !o.missing && this.listen(o.path, o.title));
     el.addEventListener("vp-remove", () => o.remove?.());
@@ -576,7 +576,7 @@ export class Panel {
       }));
     }
     let body: Node[];
-    if (rows.length) body = [this.grid("vp-list", rows, "Audio")];
+    if (rows.length) body = [this.grid("ve-p-list", rows, "Audio")];
     else if (q) body = [this.noMatches()];
     else if (sub === "project") {
       body = [empty("music", "No audio yet", "Import music or record a voice-over at the playhead.",
@@ -609,7 +609,7 @@ export class Panel {
         },
       });
     });
-    return [head, [h("h3", { class: "vc-group-h" }, "Styles"), this.grid("vp-grid vp-grid-3", tiles, "Text styles")]];
+    return [head, [h("h3", { class: "vc-group-h" }, "Styles"), this.grid("ve-p-grid ve-p-grid-3", tiles, "Text styles")]];
   }
 
   // ---- Templates
@@ -658,7 +658,7 @@ export class Panel {
     if (sub === "effects") {
       const current = this.host.currentEffect();
       if (current === null) body.push(callout("Select a clip to give it an effect.", "info"));
-      body.push(this.grid("vp-grid vp-grid-3", EFFECTS.map(([id, label]) => {
+      body.push(this.grid("ve-p-grid ve-p-grid-3", EFFECTS.map(([id, label]) => {
         const [bg, ic] = EFFECT_LOOK[id] ?? EFFECT_LOOK.none;
         return this.tile({
           thumb: h("div", { class: "vp-swatch", style: { background: bg } }, icon(ic, 18)), name: label, active: current === id, disabled: current === null,
@@ -670,7 +670,7 @@ export class Panel {
       const current = this.host.currentLook();
       const items: [LookId | "none", string][] = [["none", "None"], ...LOOKS.map((l) => [l.id, l.label] as [LookId, string])];
       body.push(h("p", { class: "vc-note" }, "On the selected clips, or every main clip when none is selected."));
-      body.push(this.grid("vp-grid vp-grid-3", items.map(([id, label]) => this.tile({
+      body.push(this.grid("ve-p-grid ve-p-grid-3", items.map(([id, label]) => this.tile({
         thumb: h("div", { class: "vp-swatch", style: { background: LOOK_SWATCH[id] ?? LOOK_SWATCH.none } }), name: label, active: current === id,
         click: () => this.host.applyLook(id, false),
       })), "Filters"));
@@ -730,7 +730,7 @@ export class Panel {
     if (!target) body.push(callout("Transitions go on a cut between two clips, or on an overlay, text or template's way in and out.", "info"));
     for (const group of groups) {
       body.push(h("h3", { class: "vc-group-h" }, group.label));
-      body.push(this.grid("vp-grid vp-grid-3", group.items.map(([kind, label]) => this.tile({
+      body.push(this.grid("ve-p-grid ve-p-grid-3", group.items.map(([kind, label]) => this.tile({
         thumb: h("div", { class: `vp-trans g-${group.label.toLowerCase()}` }, h("span", { class: "a" }), h("span", { class: "b" })),
         name: label, title: `${label}${kind === current ? " (on it now)" : ""}`, active: kind === current, disabled: !target,
         click: () => target && apply(kind),

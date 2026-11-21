@@ -14,7 +14,8 @@ use super::names::{self, parse_name};
 pub type Result<T> = std::result::Result<T, String>;
 
 const MAX_DEPTH: usize = 4;
-pub const POSTER_CAP: u64 = 300 << 20;
+/// A phone keeps far less (Zazabor TV for Android compiles this file in); the desktop keeps 1 GB.
+pub const POSTER_CAP: u64 = if cfg!(any(target_os = "android", target_os = "ios")) { 300 << 20 } else { 1 << 30 };
 
 /// Turns the entries of a container folder into (titles found, folders to look into). Children of a
 /// year folder are titles whatever they are called.
@@ -104,21 +105,53 @@ pub fn read_contents(entries: &[Entry]) -> Contents {
     Contents { video, poster, kind }
 }
 
+/// Posters live in `posters2`: the first cache kept them scaled down (soft on a big screen), so
+/// the folder was renamed and the old one is deleted at start.
+pub const POSTER_DIR: &str = "posters2";
+const THUMB_WIDTH: u32 = 480;
+
 fn poster_dir(cache: &Path) -> PathBuf {
-    cache.join("posters")
+    cache.join(POSTER_DIR)
 }
 
-/// Downloads a poster, scales it to at most 720x1080 (the hero shows it full width) and keeps it as a JPEG.
+/// The card-sized copy of a cached poster (`<id>.s.jpg` next to `<id>.<ext>`).
+pub fn thumb_path(poster: &Path) -> PathBuf {
+    poster.with_extension("s.jpg")
+}
+
+/// Downloads a poster and keeps the server's bytes untouched (full resolution, no re-encoding),
+/// plus a 480 px wide high-quality copy for grids of hundreds of cards.
 pub fn save_poster(agent: &ureq::Agent, cache: &Path, id: &str, url: &str) -> Result<Option<PathBuf>> {
-    let bytes = listing::get_bytes(agent, url, 12 << 20)?;
+    let bytes = listing::get_bytes(agent, url, 24 << 20)?;
+    let Ok(format) = image::guess_format(&bytes) else { return Ok(None) };
+    let ext = match format {
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::WebP => "webp",
+        _ => return Ok(None),
+    };
     let Ok(image) = image::load_from_memory(&bytes) else { return Ok(None) };
-    let small = image.thumbnail(720, 1080).to_rgb8();
     let dir = poster_dir(cache);
     std::fs::create_dir_all(&dir).map_err(|e| format!("Can't make the poster folder: {e}"))?;
-    let path = dir.join(format!("{id}.jpg"));
-    let mut out = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82).encode_image(&small).map_err(|e| format!("Can't encode a poster: {e}"))?;
-    std::fs::write(&path, out).map_err(|e| format!("Can't save a poster: {e}"))?;
+    let path = dir.join(format!("{id}.{ext}"));
+    // a poster saved as another format earlier must not linger beside the new one
+    for other in ["jpg", "png", "webp"] {
+        if other != ext {
+            let _ = std::fs::remove_file(path.with_extension(other));
+        }
+    }
+    let thumb = if image.width() > THUMB_WIDTH {
+        let height = ((image.height() as u64 * THUMB_WIDTH as u64) / image.width() as u64).max(1) as u32;
+        Some(image.resize_exact(THUMB_WIDTH, height, image::imageops::FilterType::Lanczos3).to_rgb8())
+    } else {
+        None
+    };
+    std::fs::write(&path, &bytes).map_err(|e| format!("Can't save a poster: {e}"))?;
+    if let Some(thumb) = thumb {
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90).encode_image(&thumb).map_err(|e| format!("Can't encode a poster: {e}"))?;
+        std::fs::write(thumb_path(&path), out).map_err(|e| format!("Can't save a poster: {e}"))?;
+    }
     static WRITES: AtomicUsize = AtomicUsize::new(0);
     if WRITES.fetch_add(1, Ordering::Relaxed) % 20 == 19 {
         prune(&dir, POSTER_CAP);

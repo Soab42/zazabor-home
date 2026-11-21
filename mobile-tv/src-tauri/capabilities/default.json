@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "The TV app's one window",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

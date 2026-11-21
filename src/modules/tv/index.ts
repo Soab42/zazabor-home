@@ -9,6 +9,7 @@ import { Detail } from "./detail";
 import { Hero, homeRows, homeSkeleton } from "./home";
 import { LivePage } from "./live";
 import { notice, PosterLoader, type TvCtx } from "./parts";
+import { isPhone, pullToRefresh } from "./phone";
 import "./tv.css";
 
 type Route =
@@ -27,6 +28,21 @@ const NAV: { id: string; label: string; route: Route }[] = [
   { id: "live", label: "Live TV", route: { id: "live" } },
   { id: "search", label: "Search", route: { id: "search" } },
 ];
+
+/** The phone's bottom tab bar: five tabs (the other sections are reached from Home's rows and the Movies page). */
+const PHONE_NAV: { id: string; label: string; glyph: Parameters<typeof icon>[0]; route: Route }[] = [
+  { id: "home", label: "Home", glyph: "home", route: { id: "home" } },
+  { id: "movies", label: "Movies", glyph: "film", route: { id: "section", section: "movies" } },
+  { id: "tv", label: "Series", glyph: "playlist", route: { id: "section", section: "tv" } },
+  { id: "live", label: "Live TV", glyph: "tv", route: { id: "live" } },
+  { id: "search", label: "Search", glyph: "search", route: { id: "search" } },
+];
+
+/** What a player that shows a name calls an episode: the title and the file's name, no extension. */
+const episodeTitle = (title: string, url: string) => {
+  const file = decodeURIComponent(url.split("/").pop() ?? "").replace(/\.[a-z0-9]{2,4}$/i, "");
+  return file ? `${title} - ${file}` : title;
+};
 
 const SECTION_TITLES: Record<string, [string, string]> = {
   movies: ["Movies", "Every film on the servers"],
@@ -50,6 +66,9 @@ class TvModule implements AppModule {
   private back = h("button", { class: "tv-nav-back", type: "button", title: "Back (Esc)", "aria-label": "Back", hidden: true, "data-tv-focus": "" }, icon("chevronLeft", 18));
   private status = h("button", { class: "tv-status", type: "button", title: "Refresh the catalog", "data-tv-focus": "" });
   private scroll = h("div", { class: "tv-scroll" });
+  /** Phone only: the bar on top (back, title, refresh status, search, settings) and the pull-to-refresh spinner. */
+  private top = h("header", { class: "tv-top" });
+  private pull = h("div", { class: "tv-ptr", "aria-hidden": "true" }, icon("refresh", 20));
   private pageEl = h("div", { class: "tv-page" });
   private layer = h("div", { class: "tv-layer" });
   private loader = new PosterLoader();
@@ -78,16 +97,26 @@ class TvModule implements AppModule {
       openDetail: (item, from) => this.openDetail(item, from),
       openCategory: (url, label) => this.go({ id: "category", url, label }),
     };
-    for (const n of NAV) {
-      const pill = h("button", { class: "tv-nav-pill", type: "button", "data-tv-focus": "" }, n.id === "search" ? icon("search", 15) : null, n.label);
+    const tabs: { id: string; label: string; glyph?: Parameters<typeof icon>[0]; route: Route }[] = isPhone ? PHONE_NAV : NAV;
+    for (const n of tabs) {
+      const glyph = n.glyph ?? (n.id === "search" ? "search" : null);
+      const pill = h("button", { class: "tv-nav-pill", type: "button", "data-tv-focus": "" }, glyph ? icon(glyph, isPhone ? 22 : 15) : null, isPhone ? h("span", null, n.label) : n.label);
       pill.addEventListener("click", () => this.go(n.route, true));
       this.pills.set(n.id, pill);
     }
     this.back.addEventListener("click", () => this.goBack());
     this.status.addEventListener("click", () => void this.refresh(true));
-    this.nav.append(this.glider, this.back, ...this.pills.values(), h("span", { class: "tv-nav-sep" }), this.status);
+    if (isPhone) {
+      const search = h("button", { class: "tv-top-btn", type: "button", "aria-label": "Search", onclick: () => this.go({ id: "search" }, true) }, icon("search", 22));
+      const settings = h("button", { class: "tv-top-btn", type: "button", "aria-label": "Settings", onclick: () => this.shell.openSettings("tv") }, icon("settings", 22));
+      this.top.append(this.back, h("h1", { class: "tv-top-title" }, "Zazabor TV"), this.status, search, settings);
+      this.nav.append(...this.pills.values());
+      pullToRefresh(this.scroll, this.pull, () => this.route.id === "home" && !this.detail, () => void this.refresh(true));
+    } else {
+      this.nav.append(this.glider, this.back, ...this.pills.values(), h("span", { class: "tv-nav-sep" }), this.status);
+    }
     this.scroll.append(this.pageEl);
-    this.el = h("div", { class: "tv" }, this.scroll, this.nav, this.layer);
+    this.el = h("div", { class: "tvx" }, this.scroll, ...(isPhone ? [this.top, this.pull] : []), this.nav, this.layer);
     this.el.addEventListener("focusin", (e) => this.rove(e.target as HTMLElement));
     let frame = 0;
     this.scroll.addEventListener("scroll", () => {
@@ -97,6 +126,8 @@ class TvModule implements AppModule {
         this.hero?.parallax(this.scroll.scrollTop);
       });
     }, { passive: true });
+    // phone: the top bar is see-through over Home's picture and gets a body once the page scrolls under it
+    if (isPhone) this.scroll.addEventListener("scroll", () => this.el.classList.toggle("scrolled", this.scroll.scrollTop > 60), { passive: true });
     new ResizeObserver(() => this.moveGlider()).observe(this.nav);
     this.paintNav();
     this.paintStatus();
@@ -120,7 +151,7 @@ class TvModule implements AppModule {
       this.scheduleReload(0);
     }
     this.hero?.start();
-    if (!this.detail) window.setTimeout(() => this.focusFirst(), 60);
+    if (!this.detail && !isPhone) window.setTimeout(() => this.focusFirst(), 60);
   }
 
   deactivate() {
@@ -216,6 +247,7 @@ class TvModule implements AppModule {
       else pill.removeAttribute("aria-current");
     }
     this.back.hidden = this.history.length === 0;
+    if (isPhone) this.el.dataset.route = this.route.id;
     requestAnimationFrame(() => this.moveGlider());
   }
 
@@ -356,7 +388,8 @@ class TvModule implements AppModule {
 
   private playUrl(item: Item, path: string, siblings?: string[]) {
     this.mark(item);
-    this.shell.open({ kind: "video", path, siblings: siblings && siblings.length > 1 ? siblings : undefined });
+    const list = siblings && siblings.length > 1 ? siblings : undefined;
+    this.shell.open({ kind: "video", path, siblings: list, title: list ? episodeTitle(item.title, path) : item.title, titles: list?.map((url) => episodeTitle(item.title, url)) });
   }
 
   // ---- the detail page
@@ -370,8 +403,10 @@ class TvModule implements AppModule {
     this.layer.classList.add("open");
     this.scroll.inert = true;
     this.nav.inert = true;
-    detail.open(from?.getBoundingClientRect() ?? null, this.layer.getBoundingClientRect());
-    window.setTimeout(() => detail.focusPrimary(), 40);
+    this.top.inert = true;
+    // on the phone the page slides up as a sheet (CSS) instead of zooming out of the card
+    detail.open(isPhone ? null : from?.getBoundingClientRect() ?? null, this.layer.getBoundingClientRect());
+    if (!isPhone) window.setTimeout(() => detail.focusPrimary(), 40);
   }
 
   private closeDetail(restore: boolean) {
@@ -381,6 +416,7 @@ class TvModule implements AppModule {
     this.layer.replaceChildren();
     this.scroll.inert = false;
     this.nav.inert = false;
+    this.top.inert = false;
     if (restore && this.detailFocus?.isConnected) this.detailFocus.focus({ preventScroll: true });
     this.detailFocus = null;
   }
@@ -401,7 +437,7 @@ class TvModule implements AppModule {
   }
 
   private focusFirst() {
-    if (this.detail || !this.active) return;
+    if (this.detail || !this.active || isPhone) return;
     const cur = document.activeElement;
     if (cur instanceof HTMLElement && this.el.contains(cur) && cur !== document.body && cur.matches("[data-tv-focus],input")) return;
     const first = this.pageEl.querySelector<HTMLElement>(".tv-slide.on .tv-pill, .tv-card, .tv-chan");

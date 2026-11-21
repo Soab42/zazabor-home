@@ -244,8 +244,8 @@ export function resetButton(syncs: Syncs, label: string, d: Defaulted): HTMLButt
 /** The trailing actions of a row: keyframe diamond, then reset (each slot kept, so columns line up). */
 export function actions(syncs: Syncs, label: string, keyed?: Keyed | null, def?: Defaulted | null): HTMLElement {
   return h("span", { class: "vc-acts" },
-    keyed ? keyButton(syncs, label, keyed) : h("span", { class: "vc-slot" }),
-    def ? resetButton(syncs, label, def) : h("span", { class: "vc-slot" }));
+    keyed ? keyButton(syncs, label, keyed) : h("span", { class: "ve-c-slot" }),
+    def ? resetButton(syncs, label, def) : h("span", { class: "ve-c-slot" }));
 }
 
 // ---- rows
@@ -258,7 +258,7 @@ export function row(label: string | null, control: Child | Child[], o: { value?:
   const controls = kids(Array.isArray(control) ? control : [control]);
   const hasValue = o.value !== undefined;
   return h("div", { class: `vc-row${o.cls ? ` ${o.cls}` : ""}`, title: o.title ?? null },
-    h("span", { class: "vc-label", title: label ?? "" }, label ?? ""),
+    h("span", { class: "ve-c-label", title: label ?? "" }, label ?? ""),
     h("div", { class: `vc-ctl${hasValue ? "" : " wide"}` }, ...controls),
     hasValue ? h("div", { class: "vc-val" }, ...kids([o.value])) : null,
     o.acts ? o.acts : h("span", { class: "vc-acts" }));

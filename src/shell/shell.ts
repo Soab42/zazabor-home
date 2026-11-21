@@ -92,6 +92,12 @@ export class Shell implements ShellContext {
       document.getElementById("app")!.append(column);
     }
     window.addEventListener("resize", () => this.drawer.fit());
+    // Looping animations (spinners, the pulsing rail dot, shimmer) stand still while the window is minimised or in the background.
+    const rest = () => document.documentElement.classList.toggle("window-idle", document.hidden || !document.hasFocus());
+    document.addEventListener("visibilitychange", rest);
+    window.addEventListener("focus", rest);
+    window.addEventListener("blur", rest);
+    rest();
     this.rail.setItems(this.enabledModules());
     this.watchStatuses();
     this.applyAppearance();

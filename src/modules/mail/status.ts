@@ -19,7 +19,7 @@ export function watchMailStatus(show: (status: RailStatus | null) => void): () =
   };
   const unlisten = onMailChanged(() => {
     clearTimeout(timer);
-    timer = window.setTimeout(() => void update(), 600);
+    timer = window.setTimeout(() => void update(), 3000);
   });
   void mailApi.start().then(update, () => undefined);
   return () => {

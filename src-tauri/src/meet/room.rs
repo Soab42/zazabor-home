@@ -2,11 +2,12 @@
 //! room never touches media (that goes peer to peer); it relays offers, answers and candidates,
 //! and tells everyone who joined, left, muted, raised a hand or chatted.
 
+use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -18,6 +19,11 @@ use super::Hub;
 pub const MAX_PEOPLE: usize = 16;
 pub const MAX_CHAT: usize = 2000;
 pub const MAX_NAME: usize = 40;
+/// A peer may chat this many times in `CHAT_WINDOW`; the rest are dropped.
+const CHAT_BURST: usize = 5;
+const CHAT_WINDOW: Duration = Duration::from_secs(2);
+/// How long a person who dropped can come back without knocking again.
+const REJOIN_WINDOW: Duration = Duration::from_secs(30);
 
 /// What a connection's thread writes out.
 pub enum Out {
@@ -39,6 +45,9 @@ pub struct Peer {
 struct Conn {
     peer: Peer,
     tx: Sender<Out>,
+    /// What the page sends back to prove it is the same person after a dropped socket.
+    token: String,
+    chats: VecDeque<Instant>,
 }
 
 impl Conn {
@@ -51,6 +60,8 @@ impl Conn {
 struct Inner {
     peers: Vec<Conn>,
     lobby: Vec<Conn>,
+    /// (rejoin token, name, when) of people whose connection dropped a moment ago.
+    dropped: Vec<(String, String, Instant)>,
     meeting_id: String,
     title: String,
     recording: bool,
@@ -119,15 +130,33 @@ impl Room {
             hand: false,
             sharing: false,
         };
-        let conn = Conn { peer, tx };
+        let mut conn = Conn { peer, tx, token: format!("{}{}", super::store::new_id(), super::store::new_id()), chats: VecDeque::new() };
         let mut i = self.lock();
         i.meeting_id = m.id.clone();
         i.title = m.title.clone();
+        // Someone coming back after a dropped connection goes straight in, under the same name.
+        let mut rejoin = false;
+        if let Some(token) = hello.get("rejoin").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+            i.dropped.retain(|d| d.2.elapsed() < REJOIN_WINDOW);
+            if let Some(pos) = i.dropped.iter().position(|d| d.0 == token) {
+                conn.peer.name = i.dropped.remove(pos).1;
+                rejoin = true;
+            } else if let Some(pos) = i.peers.iter().position(|c| c.token == token) {
+                // The old socket has not been noticed as dead yet: this one replaces it.
+                let old = i.peers.remove(pos);
+                conn.peer.name = old.peer.name.clone();
+                let _ = old.tx.send(Out::Close);
+                for o in &i.peers {
+                    o.send(json!({"t": "peer-left", "id": old.peer.id}));
+                }
+                rejoin = true;
+            }
+        }
         if i.peers.len() >= MAX_PEOPLE && !is_host {
             conn.send(json!({"t": "full"}));
             return Hello::Refused;
         }
-        if m.lobby && !is_host {
+        if m.lobby && !is_host && !rejoin {
             let knock = json!({"t": "knock", "id": id, "name": conn.peer.name});
             let name = conn.peer.name.clone();
             conn.send(json!({"t": "lobby"}));
@@ -168,7 +197,7 @@ impl Room {
         conn.send(json!({
             "t": "welcome", "id": peer.id, "name": peer.name, "peers": others,
             "meeting": {"title": m.title, "kind": m.kind, "recording": i.recording, "autoRecord": m.auto_record, "lobby": m.lobby},
-            "ice": hub.ice(), "host": peer.host,
+            "ice": hub.ice(), "host": peer.host, "rejoin": conn.token,
         }));
         i.peers.push(conn);
     }
@@ -186,6 +215,8 @@ impl Room {
         }
         if let Some(pos) = i.peers.iter().position(|c| c.peer.id == id) {
             let c = i.peers.remove(pos);
+            i.dropped.retain(|d| d.2.elapsed() < REJOIN_WINDOW);
+            i.dropped.push((c.token.clone(), c.peer.name.clone(), Instant::now()));
             for o in &i.peers {
                 o.send(json!({"t": "peer-left", "id": id}));
             }
@@ -249,6 +280,16 @@ impl Room {
                 if text.is_empty() {
                     return;
                 }
+                let now = Instant::now();
+                let sender = &mut i.peers[me];
+                while sender.chats.front().is_some_and(|t| now.duration_since(*t) > CHAT_WINDOW) {
+                    sender.chats.pop_front();
+                }
+                if sender.chats.len() >= CHAT_BURST {
+                    sender.send(json!({"t": "chat-slow"}));
+                    return;
+                }
+                sender.chats.push_back(now);
                 let name = i.peers[me].peer.name.clone();
                 let msg = json!({"t": "chat", "from": id, "name": name, "text": text, "at": now_ms()});
                 for c in &i.peers {

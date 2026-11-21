@@ -508,7 +508,7 @@ export class Inspector {
           const tr = x[key];
           if (tr) tr.duration = v;
         }), 0.5),
-        acts: h("span", { class: "vc-acts" }, h("span", { class: "vc-slot" }),
+        acts: h("span", { class: "vc-acts" }, h("span", { class: "ve-c-slot" }),
           mini("sparkles", `Browse ${label.toLowerCase()} transitions`, () => this.host.browse("transitions", slotOf[key]))),
         title: tip,
       });
@@ -688,7 +688,7 @@ export class Inspector {
         modified: () => fx().look !== "none",
         reset: () => this.edit<MediaClip>(id, "look", (x) => (x.fx.look = "none")),
       }, row("Look", select(this.syncs, "Filter", looks, () => fx().look, (v) => this.edit<MediaClip>(id, "look", (x) => (x.fx.look = v))), {
-        acts: h("span", { class: "vc-acts" }, h("span", { class: "vc-slot" }), mini("palette", "Browse filters (Alt+6)", () => this.host.browse("filters"))),
+        acts: h("span", { class: "vc-acts" }, h("span", { class: "ve-c-slot" }), mini("palette", "Browse filters (Alt+6)", () => this.host.browse("filters"))),
       })),
       section(this.syncs, {
         id: this.sid(kind, "basic"), title: "Basic",
@@ -713,7 +713,7 @@ export class Inspector {
         }),
       },
       selectRow(this.syncs, "Effect", EFFECTS, () => fx().effect, (v) => this.edit<MediaClip>(id, "effect", (x) => (x.fx.effect = v)), {
-        acts: h("span", { class: "vc-acts" }, h("span", { class: "vc-slot" }), mini("sparkles", "Browse effects (Alt+6)", () => this.host.browse("filters"))),
+        acts: h("span", { class: "vc-acts" }, h("span", { class: "ve-c-slot" }), mini("sparkles", "Browse effects (Alt+6)", () => this.host.browse("filters"))),
       }),
       clip.fx.effect !== "none" ? this.valueRow("Amount", pct, () => fx().amount, (v) => this.edit<MediaClip>(id, "amount", (x) => (x.fx.amount = v)), 0.6) : null,
       ),

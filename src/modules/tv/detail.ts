@@ -2,7 +2,7 @@ import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import { showToast } from "../files/ops/toast";
 import { errorText, picUrl, sizeText, tvApi, type Item, type Season } from "./api";
-import { badges, hueOf, meta, shelf, type TvCtx } from "./parts";
+import { badges, hued, meta, shelf, type TvCtx } from "./parts";
 
 const decodeSafe = (text: string) => {
   try {
@@ -28,23 +28,27 @@ export class Detail {
   private art: HTMLElement;
   private posterBox: HTMLElement;
   private more = h("div", { class: "tv-detail-more" });
+  /** The title's other qualities (its 720p and 1080p folders), read once. */
+  private variants: Item[] = [];
+  private apply: (next: Item) => void = () => undefined;
 
   constructor(item: Item, private ctx: TvCtx, private close: () => void) {
     this.item = item;
     const bg = h("img", { class: "tv-detail-bg", alt: "", draggable: false });
     const poster = h("img", { class: "tv-detail-poster", alt: "", draggable: false });
-    const art = h("div", { class: "tv-detail-art", style: { "--h": String(hueOf(item.title)) } }, bg, h("div", { class: "tv-detail-shade" }));
-    const posterBox = h("div", { class: "tv-detail-card", style: { "--h": String(hueOf(item.title)) } }, h("span", { class: "tv-fallback-title" }, item.title), poster);
+    const art = hued(h("div", { class: "tv-detail-art" }, bg, h("div", { class: "tv-detail-shade" })), item.title);
+    const posterBox = hued(h("div", { class: "tv-detail-card" }, h("span", { class: "tv-fallback-title" }, item.title), poster), item.title);
     const apply = (next: Item) => {
       Object.assign(this.item, next);
       if (next.poster && bg.dataset.src !== next.poster) {
         bg.dataset.src = next.poster;
         bg.src = poster.src = picUrl(next.poster);
-        art.classList.add("has-img");
-        posterBox.classList.add("has-img");
+        art.classList.add("tv-has-img");
+        posterBox.classList.add("tv-has-img");
       }
       this.drawFacts();
     };
+    this.apply = apply;
     this.art = art;
     this.posterBox = posterBox;
     const x = h("button", { class: "tv-close glass", type: "button", "aria-label": "Close", title: "Close (Esc)", "data-tv-focus": "" }, icon("close", 18));
@@ -57,6 +61,7 @@ export class Detail {
     if (item.poster) apply(item);
     else if (!item.noPoster) void tvApi.resolve(item.id).then(apply, () => undefined);
     void this.loadMore();
+    if ((item.qualities?.length ?? 0) > 1) void tvApi.variants(item.id).then((all) => ((this.variants = all), this.drawFacts()), () => undefined);
     if (item.kind === "series") void this.loadSeasons();
     else if (!item.videoUrl) void tvApi.resolve(item.id).then(apply, () => undefined);
   }
@@ -123,11 +128,40 @@ export class Detail {
     this.body.replaceChildren(
       h("span", { class: "tv-kicker" }, item.category),
       h("h1", { class: "tv-detail-title" }, item.title),
-      h("p", { class: "tv-slide-meta" }, meta(item)),
+      h("p", { class: "tv-slide-meta" }, meta({ ...item, qualities: [item.quality] }, true)),
+      ...(this.variants.length > 1 ? [this.qualitySwitch()!] : []),
       badges(item, 7),
       h("div", { class: "tv-detail-actions" }, play, folder, copy),
       facts);
     if (keep) this.body.append(keep);
+  }
+
+  /** 1080p / 720p chips when the title has several folders; picking one swaps the whole page to it. */
+  private qualitySwitch(): HTMLElement | null {
+    if (this.variants.length < 2) return null;
+    const row = h("div", { class: "tv-quality", role: "radiogroup", "aria-label": "Quality" }, h("span", { class: "tv-quality-label" }, "Quality"));
+    const seg = h("div", { class: "tv-seg" });
+    for (const v of this.variants) {
+      const on = v.id === this.item.id;
+      const b = h("button", { class: `tv-seg-btn${on ? " on" : ""}`, type: "button", role: "radio", "aria-checked": String(on), "data-tv-focus": "" }, v.quality || "Original");
+      b.addEventListener("click", () => this.pick(v));
+      seg.append(b);
+    }
+    row.append(seg);
+    return row;
+  }
+
+  private pick(v: Item) {
+    if (v.id === this.item.id) return;
+    this.item = v;
+    this.seasons = [];
+    this.season = 0;
+    this.body.querySelector(".tv-episodes-wrap")?.remove();
+    this.drawFacts();
+    if (v.poster) this.apply(v);
+    else if (!v.noPoster) void tvApi.resolve(v.id).then(this.apply, () => undefined);
+    if (v.kind === "series") void this.loadSeasons();
+    else if (!v.videoUrl) void tvApi.resolve(v.id).then(this.apply, () => undefined);
   }
 
   private playLabel() {
@@ -145,7 +179,7 @@ export class Detail {
   }
 
   private async loadSeasons() {
-    const wrap = h("section", { class: "tv-episodes-wrap" }, h("div", { class: "tv-episodes-loading shimmer-line" }), h("div", { class: "tv-episodes-loading shimmer-line" }), h("div", { class: "tv-episodes-loading shimmer-line" }));
+    const wrap = h("section", { class: "tv-episodes-wrap" }, h("div", { class: "tv-episodes-loading tv-shimmer-line" }), h("div", { class: "tv-episodes-loading tv-shimmer-line" }), h("div", { class: "tv-episodes-loading tv-shimmer-line" }));
     this.body.append(wrap);
     try {
       this.seasons = await tvApi.episodes(this.item.id);

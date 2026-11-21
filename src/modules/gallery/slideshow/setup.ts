@@ -276,7 +276,7 @@ export class SettingsForm {
     const row = (choice: string | null, title: string, detail: string) => {
       const selected = (this.settings.music ?? null) === choice;
       const playing = choice !== null && isPreviewing(choice);
-      const listen = h("button", { type: "button", class: "ml-play", title: playing ? "Stop" : "Listen", disabled: choice === null },
+      const listen = h("button", { type: "button", class: "sm-play", title: playing ? "Stop" : "Listen", disabled: choice === null },
         icon(playing ? "pause" : "play", 13));
       listen.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -288,9 +288,9 @@ export class SettingsForm {
         }
         this.renderMusic();
       });
-      const item = h("div", { class: `ml-row${selected ? " active" : ""}`, role: "option", tabIndex: 0 },
-        listen, h("span", { class: "ml-title" }, title), h("span", { class: "ml-detail" }, detail),
-        selected ? h("span", { class: "ml-check" }, icon("check", 14)) : null);
+      const item = h("div", { class: `sm-row${selected ? " active" : ""}`, role: "option", tabIndex: 0 },
+        listen, h("span", { class: "sm-title" }, title), h("span", { class: "sm-detail" }, detail),
+        selected ? h("span", { class: "sm-check" }, icon("check", 14)) : null);
       const choose = () => {
         this.settings.music = choice;
         this.changed("music");
@@ -306,7 +306,7 @@ export class SettingsForm {
     };
     const actions = h(
       "div",
-      { class: "ml-actions" },
+      { class: "sm-actions" },
       h("button", { type: "button", class: "btn small", onclick: () => this.chooseFile() }, icon("folder", 14), "Choose a file…"),
       h("button", { type: "button", class: "btn small", title: "Songs you put here appear in this list", onclick: () => invoke("open_music_folder").catch(() => {}) }, icon("music", 14), "Open Music folder"),
       h("button", { type: "button", class: "btn small", title: "Opens YouTube's Audio Library in your browser. Its tracks are free to download and use; save them to your Music folder.", onclick: () => invoke("open_audio_library").catch(() => {}) }, icon("play", 13), "Free music on YouTube"),
@@ -318,12 +318,12 @@ export class SettingsForm {
     this.renderMusic = () => {
       const current = this.settings.music;
       list.replaceChildren(row(null, "No music", ""));
-      list.append(h("div", { class: "ml-head" }, "Zazabor Home soundtracks"));
+      list.append(h("div", { class: "sm-head" }, "Zazabor Home soundtracks"));
       // Not downloaded yet: its size (it downloads when it's first played).
       for (const track of this.tracks) list.append(row(`${BUILTIN_MUSIC}${track.id}`, track.title, isLocal(track.file) ? track.vibe : `${track.vibe} · ${formatBytes(track.bytes)}`));
       const own = current && !current.startsWith(BUILTIN_MUSIC) && !this.songs.some((s) => s.path === current) ? [current] : [];
       if (this.songs.length || own.length) {
-        list.append(h("div", { class: "ml-head" }, "Your music"));
+        list.append(h("div", { class: "sm-head" }, "Your music"));
         for (const path of own) list.append(row(path, basename(path), "chosen file"));
         for (const song of this.songs) list.append(row(song.path, song.name, song.folder));
       }
@@ -395,7 +395,7 @@ export function openSetupDialog(scopes: SlideshowScope[], settings: SlideshowSet
         e.preventDefault();
         e.stopPropagation();
         finish(null);
-      } else if (e.key === "Enter" && !(e.target instanceof HTMLSelectElement) && !(e.target as HTMLElement)?.closest?.(".ml-row")) {
+      } else if (e.key === "Enter" && !(e.target instanceof HTMLSelectElement) && !(e.target as HTMLElement)?.closest?.(".sm-row")) {
         e.preventDefault();
         e.stopPropagation();
         finish(scopes[chosen]);
@@ -418,7 +418,7 @@ export function openSetupDialog(scopes: SlideshowScope[], settings: SlideshowSet
       "div",
       { class: "setup-side" },
       form.preview.el,
-      scopes.length > 1 ? h("div", { class: "setup-scopes" }, h("div", { class: "ml-head" }, "Play"), scopeList) : null,
+      scopes.length > 1 ? h("div", { class: "setup-scopes" }, h("div", { class: "sm-head" }, "Play"), scopeList) : null,
     );
     const dialog = h(
       "div",

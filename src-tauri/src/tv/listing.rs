@@ -220,6 +220,7 @@ pub fn classify(label: &str, url: &str) -> (String, bool) {
 
 fn category(url: &str, label: &str) -> Category {
     let (section, series) = classify(label, url);
+    let label = &super::names::clean_label(label);
     Category { url: url.to_string(), label: label.to_string(), section, series, default_on: !label.to_lowercase().contains("tutorial") }
 }
 

@@ -85,7 +85,9 @@ body.clip-popup-window #app { display: block; height: 100vh; }
 .cm-count { color: var(--faint); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .cm-bar .cm-search { flex: 0 1 240px; width: auto; }
 .cm-bar .segmented button { white-space: nowrap; }
-.cm-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 40px; }
+.cm-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 18px 24px 40px; }
+.cm-content { flex: 1 0 auto; display: flex; flex-direction: column; }
+.cm-content > .cp-empty { padding-bottom: 8vh; }
 .cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-items: start; }
 .cm-grid .clip-card { padding: 10px 10px 12px 14px; }
 .cm-grid .clip-text { max-height: 11.3em; }
@@ -95,10 +97,10 @@ body.clip-popup-window #app { display: block; height: 100vh; }
 .cm-hint { margin: 0 0 14px; color: var(--muted); font-size: var(--text-sm); }
 
 /* ---- Settings → Clipboard ---- */
-.st-clip-excludes { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 420px; }
+.st-clip-excludes { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; width: 100%; }
 .st-clip-chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 4px 0 10px; border-radius: 12px; background: var(--control); box-shadow: inset 0 0 0 0.5px var(--line-strong); font-size: var(--text-sm); }
 .st-clip-chip button { display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
 .st-clip-chip button:hover { background: var(--hover); color: var(--text); }
 .st-clip-input { width: 140px; height: 26px; padding: 0 8px; border: 0; border-radius: 7px; background: var(--control); color: var(--text); font: inherit; font-size: var(--text-sm); box-shadow: inset 0 0 0 0.5px var(--line-strong); outline: none; }
 .st-clip-input:focus { box-shadow: 0 0 0 3px var(--focus); }
-.st-clip-note { color: var(--muted); font-size: var(--text-sm); }
+.st-clip-note { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: var(--text-sm); text-align: left; }

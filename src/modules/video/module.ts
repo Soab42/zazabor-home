@@ -9,6 +9,7 @@ import { MAX_VOLUME, type VideoSurface } from "./api";
 import { ControlBar, openPlayerMenu } from "./controls";
 import { openCustomize, type CustomizeHandle } from "./customize";
 import { featureSettings, type MenuPlace, type PanelTab, type VideoContext, type VideoFeature } from "./extensions";
+import { isFocusClick } from "./focus-click";
 import { FEATURES } from "./features";
 import { mediaSettings, onMediaSettings } from "./features/profiles/settings";
 import { formatRate } from "./format";
@@ -313,6 +314,8 @@ export class VideoModule implements AppModule {
     });
     this.stage.addEventListener("click", (e) => {
       if (this.view !== "player" || this.phoneScreen || onStageControl(e)) return;
+      // A click that only focused the window doesn't pause.
+      if (isFocusClick()) return;
       // Wait out a possible double click before treating it as play/pause.
       clearTimeout(this.clickTimer);
       this.clickTimer = window.setTimeout(() => this.player.togglePlay(), 220);

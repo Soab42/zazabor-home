@@ -1,5 +1,6 @@
 import type { SettingsRow } from "../appearance";
 import type { Category } from "../shell/settings";
+import "./clipboard.css";
 import { invoke } from "@tauri-apps/api/core";
 import { h } from "../ui/dom";
 import { icon } from "../ui/icons";
@@ -128,10 +129,10 @@ export function clipboardCategory(): Category {
           enabled.row,
           background.row,
           wide("Quit Zazabor Home", "Closes every window and stops Zazabor Home, the background mode too, until you open it again. Office asks about unsaved files first. The menu entry's right-click has Quit as well.",
-            h("div", { class: "st-inline" }, button("Quit Zazabor Home", () => void invoke("app_quit").catch((err) => console.warn("Couldn't quit:", err)), "btn small ghost"))),
+            h("div", { class: "st-inline" }, button("Quit Zazabor Home", () => void invoke("app_quit").catch((err) => console.warn("Couldn't quit:", err))))),
           clearOnExit.row,
           wide("Don't keep copies from", "Copies made in these apps never enter the history (a password manager, a banking app). Right-click an item in the Clipboard section to add its app.", chips),
-          wide("Clear history", "Removes everything but the pinned items.", h("div", { class: "st-inline" }, button("Clear All", () => void clipboardApi.clear(), "btn small ghost"))),
+          wide("Clear history", "Removes everything but the pinned items.", h("div", { class: "st-inline" }, button("Clear All", () => void clipboardApi.clear()))),
         ],
       },
       {

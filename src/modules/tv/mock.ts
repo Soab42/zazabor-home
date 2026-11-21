@@ -160,6 +160,8 @@ function build(): Item[] {
         videoUrl: series ? "" : `${cat.url}${encodeURIComponent(name)}/${encodeURIComponent(s.t)}.mkv`,
         size: series ? 0 : (900 + ((hueOf(s.t) * 13) % 2600)) * 1048576,
         poster: poster(s.t, s.y),
+        posterThumb: null,
+        qualities: [quality],
         noPoster: false,
         added: NOW - (i * 3 + (n % 5)) * DAY * (s.y >= 2024 ? 1 : 12) - (n % 9) * 3600000,
         rank: s.rank ?? null,
@@ -255,6 +257,10 @@ export function createMock(mode: string): TvMock {
         case "tv_home": return home();
         case "tv_items": {
           const f = args.filter as Filter;
+          if (f.sameAs) {
+            const one = all.filter((i) => i.id === f.sameAs);
+            return { items: one, total: one.length, years: [], qualities: [] } satisfies Page;
+          }
           const list = filtered(f);
           const noYear = filtered(f, false, false);
           const years = new Map<number, number>();

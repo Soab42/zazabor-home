@@ -1,7 +1,7 @@
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import { picUrl, type CatRow, type Home, type Item } from "./api";
-import { badges, hueOf, meta, shelf, skeletonShelf, type TvCtx } from "./parts";
+import { badges, hued, meta, shelf, skeletonShelf, type TvCtx } from "./parts";
 
 /** Seconds each title stays: the progress bars and the Ken Burns move share it. */
 const SLIDE_SECONDS = 7;
@@ -49,20 +49,31 @@ export class Hero {
     this.el.addEventListener("pointerleave", () => this.el.classList.remove("hold"));
     this.el.addEventListener("focusin", () => this.el.classList.add("hold"));
     this.el.addEventListener("focusout", () => this.el.classList.remove("hold"));
-    document.addEventListener("visibilitychange", () => this.el.classList.toggle("hidden", document.hidden));
+    // the hero stands still while the window is minimised or not the one being looked at
+    const rest = () => this.el.classList.toggle("hidden", document.hidden || !document.hasFocus());
+    document.addEventListener("visibilitychange", rest);
+    window.addEventListener("focus", rest);
+    window.addEventListener("blur", rest);
     new ResizeObserver(() => (this.height = this.el.offsetHeight || this.height)).observe(this.el);
     this.go(0, false);
   }
 
   private slide(item: Item, i: number): HTMLElement {
-    const bg = h("img", { class: "tv-slide-bg", alt: "", draggable: false });
-    const art = h("div", { class: "tv-slide-art", style: { "--h": String(hueOf(item.title)) } }, bg, h("div", { class: "tv-slide-shade" }));
+    // the backdrop is the poster blurred and colour-graded (blur hides how few pixels it has); the
+    // sharp poster sits on the right at no more than 1.25x its own size, melting into the backdrop
+    const blur = h("img", { class: "tv-slide-blur", alt: "", draggable: false });
+    const sharp = h("img", { class: "tv-slide-poster", alt: "", draggable: false, decoding: "async" });
+    const art = hued(h("div", { class: "tv-slide-art" }, h("div", { class: "tv-slide-drift" }, blur), h("div", { class: "tv-slide-shade" }), h("div", { class: "tv-slide-frame" }, sharp)), item.title);
     const apply = (next: Item) => {
       Object.assign(item, next);
-      if (next.poster && bg.dataset.src !== next.poster) {
-        bg.dataset.src = next.poster;
-        bg.src = picUrl(next.poster);
-        art.classList.add("has-img");
+      if (next.poster && blur.dataset.src !== next.poster) {
+        blur.dataset.src = next.poster;
+        sharp.onload = () => {
+          // never enlarge the picture beyond 1.25x: a small poster gets a smaller frame
+          art.style.setProperty("--poster-max", `${Math.round(sharp.naturalHeight * 1.25)}px`);
+          art.classList.add("tv-has-img");
+        };
+        blur.src = sharp.src = picUrl(next.poster);
       }
     };
     const play = h("button", { class: "tv-pill primary", type: "button", "data-tv-focus": "" }, icon("play", 17), item.kind === "series" ? "Watch" : "Play");
@@ -164,5 +175,5 @@ export function homeRows(home: Home, ctx: TvCtx): { hero: Hero | null; rows: HTM
 }
 
 export function homeSkeleton(): HTMLElement {
-  return h("div", { class: "tv-home-skeleton" }, h("div", { class: "tv-hero shimmer" }), skeletonShelf("New on DhakaFlix"), skeletonShelf("Top 10"));
+  return h("div", { class: "tv-home-skeleton" }, h("div", { class: "tv-hero tv-shimmer" }), skeletonShelf("New on DhakaFlix"), skeletonShelf("Top 10"));
 }

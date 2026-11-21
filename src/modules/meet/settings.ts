@@ -1,3 +1,5 @@
+import "../files/ops/ops.css";
+import "./meet.css";
 import { invoke } from "@tauri-apps/api/core";
 import type { SettingsRow } from "../../appearance";
 import type { Config } from "../../config";
@@ -30,7 +32,7 @@ export function meetCategory(_host: { readonly config: Config }): Category {
       fail(err);
     }).finally(() => (tunnelInput.disabled = false));
   });
-  const addressText = h("span", { class: "st-value mt-settings-address" }, "—");
+  const addressText = h("span", { class: "st-value mtg-settings-address" }, "—");
   const copy = h("button", { class: "btn small ghost", type: "button" }, "Copy");
   copy.addEventListener("click", () => void navigator.clipboard?.writeText(addressText.textContent ?? "").catch(() => undefined));
   const addressRow: SettingsRow = { label: "Address", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Address"), h("p", { class: "sf-hint" }, "Changes each time the link starts; invitations carry the current one.")), h("div", { class: "pl-settings-buttons" }, addressText, copy)) };
@@ -42,8 +44,8 @@ export function meetCategory(_host: { readonly config: Config }): Category {
   const folderRow: SettingsRow = { label: "Recordings folder", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Recordings go to"), folder), show) };
 
   // ---- connection
-  const field = (placeholder: string, label: string, type = "text") => h("input", { class: "ops-input mt-settings-input", type, placeholder, spellcheck: false, autocomplete: "off", "aria-label": label });
-  const stun = h("textarea", { class: "ops-input mt-settings-stun", rows: 3, spellcheck: false, placeholder: "stun:stun.example.com:3478", "aria-label": "STUN servers" });
+  const field = (placeholder: string, label: string, type = "text") => h("input", { class: "ops-input mtg-settings-input", type, placeholder, spellcheck: false, autocomplete: "off", "aria-label": label });
+  const stun = h("textarea", { class: "ops-input mtg-settings-stun", rows: 3, spellcheck: false, placeholder: "stun:stun.example.com:3478", "aria-label": "STUN servers" });
   const turnUrl = field("turn:turn.example.com:3478", "TURN server address");
   const turnUser = field("Username", "TURN username");
   const turnPass = field("Credential", "TURN credential", "password");

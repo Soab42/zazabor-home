@@ -22,7 +22,8 @@ export type OpenRequest =
    * window exists only for this file, so show it without the module's library around it.
    */
   | { kind: "image"; path: string; siblings?: string[]; alone?: boolean }
-  | { kind: "video"; path: string; siblings?: string[]; alone?: boolean }
+  /** `title` and `titles` (one per `siblings` entry) are what TV passes for players that show a name (Zazabor TV hands them to VLC). */
+  | { kind: "video"; path: string; siblings?: string[]; alone?: boolean; title?: string; titles?: string[] }
   /** A Word or Excel file (or .csv, .odt…), for Office. */
   | { kind: "office"; path: string; alone?: boolean }
   /**

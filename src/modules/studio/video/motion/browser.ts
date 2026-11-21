@@ -118,7 +118,7 @@ export class TemplateBrowser {
       this.drawGrid();
     });
     return [
-      h("div", { class: "vp-search-row" }, this.search, options),
+      h("div", { class: "ve-p-search-row" }, this.search, options),
       chipRow({ role: "tablist", "aria-label": "Categories" }, chipButtons),
     ];
   }
