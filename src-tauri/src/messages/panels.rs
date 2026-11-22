@@ -99,14 +99,16 @@ fn navigation_allowed(id: &str, uri: &str) -> bool {
     let Ok(url) = uri.parse::<tauri::Url>() else { return false };
     let allowed = matches!(url.scheme(), "http" | "https" | "about" | "blob" | "data");
     if !allowed {
-        eprintln!("[messages] {id}: refused navigation to {uri}");
+        eprintln!("[messages] {id}: refused a {}: navigation", url.scheme());
     }
     allowed
 }
 
 /// A pop-up or `target=_blank` link goes to the system browser, never into the panel.
 fn open_outside(id: &str, uri: &str) {
-    eprintln!("[messages] {id}: new window {uri}");
+    // Only the site: a link from a chat can carry private details in its path or query.
+    let site = uri.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| "?".into());
+    eprintln!("[messages] {id}: new window on {site}");
     if uri.starts_with("http://") || uri.starts_with("https://") {
         let _ = crate::open_with_system(std::ffi::OsStr::new(uri));
     }

@@ -100,11 +100,21 @@ fn rate_ok(id: &str) -> bool {
     true
 }
 
+/// Whether message text may go to the log (the spike's ZAZABOR_MSG_SPIKE switch).
+fn verbose() -> bool {
+    std::env::var_os("ZAZABOR_MSG_SPIKE").is_some()
+}
+
 /// Acts on a report from account `id` (shown as `name`).
 pub fn deliver(app: &AppHandle, id: &str, name: &str, event: Event) {
     match event {
         Event::Notify { via, title, body, tag } => {
-            eprintln!("[messages] {id}: notification via {via}: {title:?} / {body:?} (tag {tag:?})");
+            // Message text is private: only lengths, unless the spike's debug switch is on.
+            if verbose() {
+                eprintln!("[messages] {id}: notification via {via}: {title:?} / {body:?} (tag {tag:?})");
+            } else {
+                eprintln!("[messages] {id}: notification via {via} (title {} chars, body {} chars)", title.chars().count(), body.chars().count());
+            }
             if !rate_ok(id) {
                 eprintln!("[messages] {id}: notification dropped (rate limit)");
                 return;
@@ -120,7 +130,10 @@ pub fn deliver(app: &AppHandle, id: &str, name: &str, event: Event) {
         }
         Event::Title(title) => {
             let count = unread_from_title(&title);
-            eprintln!("[messages] {id}: title {title:?} -> unread {count}");
+            // A page title can name a contact ("Ann messaged you"): log it only in debug mode.
+            if verbose() {
+                eprintln!("[messages] {id}: title {title:?} -> unread {count}");
+            }
             let _ = app.emit("msg-unread", serde_json::json!({ "id": id, "count": count }));
         }
         Event::Debug(msg) => eprintln!("[messages] {id}: dbg {msg}"),
