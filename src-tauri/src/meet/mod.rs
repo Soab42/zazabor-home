@@ -971,6 +971,30 @@ pub async fn meet_ai_cancel(id: String) -> Result<()> {
     .await
 }
 
+/// The cloud providers and whether a key is saved for each (never the key).
+#[tauri::command]
+pub async fn meet_ai_cloud_state() -> Result<Vec<ai::ProviderState>> {
+    blocking(|hub| Ok(hub.cloud_state())).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_cloud_key_set(provider: String, key: String) -> Result<Vec<ai::ProviderState>> {
+    blocking(move |hub| hub.cloud_key_set(&provider, &key)).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_cloud_key_clear(provider: String) -> Result<Vec<ai::ProviderState>> {
+    blocking(move |hub| hub.cloud_key_clear(&provider)).await
+}
+
+/// Settings' "Test key": a tiny request with the saved key and the provider's notes model.
+#[tauri::command]
+pub async fn meet_ai_cloud_test(provider: String) -> Result<String> {
+    let (client, model) = blocking(move |hub| hub.cloud_test_client(&provider)).await?;
+    client.ping(&std::sync::atomic::AtomicBool::new(false)).await.map_err(|e| e.text())?;
+    Ok(format!("The key works with {model}."))
+}
+
 #[tauri::command]
 pub async fn meet_ai_off(id: String, off: bool) -> Result<()> {
     blocking(move |hub| hub.ai_off(&id, off)).await

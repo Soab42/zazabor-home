@@ -20,16 +20,21 @@ import {
  */
 
 /**
- * Bangla transcripts, subtitles and notes. Off in 0.3.4 (stock models gave unusable Bangla);
- * matches `BANGLA_READY` in src-tauri/src/meet/ai.rs. Bangla chips stay hidden while it's off.
+ * Bangla transcripts, subtitles and notes on this PC. Off in 0.3.4 (stock models gave unusable
+ * Bangla); matches `BANGLA_READY` in src-tauri/src/meet/ai.rs. Bangla chips stay hidden while it's
+ * off, unless Cloud speech to text is on (`AiSettings.banglaOn`, which Zazabor works out).
  */
 export const BANGLA_READY = false;
+
+/** Whether Bangla is shown, given the settings (this PC's gate, or Cloud speech to text). */
+export const banglaAvailable = (settings: { banglaOn: boolean } | null | undefined) => BANGLA_READY || !!settings?.banglaOn;
 
 type Subs = "off" | "orig" | "en" | "bn";
 type Shown = "orig" | "en" | "bn";
 
 const MODEL_NAME: Record<string, string> = { small: "Whisper small", medium: "Whisper medium", qwen: "the notes model" };
 const LANG_LABEL: Record<string, string> = { en: "EN", bn: "বাং" };
+const CLOUD_NAME: Record<string, string> = { claude: "Claude", openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter" };
 
 /** `Name 2026-11-21 14.30.webm` → `Name 2026-11-21 14.30` plus a suffix. */
 const sidecar = (path: string, suffix: string) => path.replace(/\.[^./\\]+$/, "") + suffix;
@@ -70,6 +75,8 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
   let query = "";
   let loadedFor = "";
   let saveTimer = 0;
+  // Bangla shows on this PC when its models can, or while Cloud speech to text is on.
+  let banglaOn = BANGLA_READY;
 
   const toast = showToast;
   const fail = (what: string) => (err: unknown) => toast(`${what}: ${errorText(err)}`);
@@ -121,10 +128,13 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
     const row = (...children: (Node | string | null)[]) => h("div", { class: "mtg-job-row" }, ...children);
     const act = (label: string, glyph: Parameters<typeof icon>[0], kind: string, run: () => void) => h("button", { class: `btn small${kind ? ` ${kind}` : ""}`, type: "button", onclick: run }, icon(glyph, 14), label);
     const run = (options?: Parameters<typeof meetApi.aiRun>[1]) => void meetApi.aiRun(rec.id, options).catch(fail("Couldn't start"));
+    // With Cloud on, what a run sends, and the way out of it for this meeting.
+    const cloudNote = (): Node[] => (i.cloud ? [h("p", { class: "sf-hint mtg-cloud" }, icon("upload", 13), `Cloud AI is on: about ${i.sendMinutes} minute${i.sendMinutes === 1 ? "" : "s"} of audio will be sent to ${i.cloud}, then the transcript text to your notes provider (Settings → Meet).`)] : []);
+    const thisPc = (redo?: "notes") => (i.cloud ? act("Use this PC instead", "desktop", "", () => run({ processing: "local", ...(redo ? { redo } : {}) })) : null);
     if (i.state === "running" || i.state === "queued") {
       const bar = h("div", { class: "mtg-bar" }, h("div", { class: "mtg-bar-fill", style: { width: `${Math.round(i.progress * 100)}%` } }));
       jobBox.append(row(h("strong", null, i.state === "queued" ? "Waiting for its turn" : "Working on it"), h("span", { class: "mtg-job-msg" }, i.message), act("Stop", "stop", "", () => void meetApi.aiCancel(rec.id).catch(fail("Couldn't stop"))), ), bar,
-        h("p", { class: "sf-hint" }, "This runs on this PC, at low priority, and waits while the PC is busy. You can leave this page."));
+        h("p", { class: "sf-hint" }, i.cloud ? "The sound and the transcript text go to your cloud providers (Settings → Meet). You can leave this page." : "This runs on this PC, at low priority, and waits while the PC is busy. You can leave this page."));
     } else if (i.state === "needs-models") {
       const needed = modelsFor(i.missing);
       const total = needed.filter((m) => !m.installed).reduce((n, m) => n + m.bytes, 0);
@@ -140,13 +150,13 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
       if (needed.length && needed.every((m) => m.installed)) buttons.append(act(`Transcribe (${formatBytes(total)} ready)`, "play", "primary", () => run()));
       jobBox.append(buttons);
     } else if (i.state === "error") {
-      jobBox.append(row(h("strong", { class: "bad" }, "It didn't work"), h("span", { class: "mtg-job-msg" }, i.message), act("Try again", "refresh", "", () => run())));
+      jobBox.append(row(h("strong", { class: "bad" }, "It didn't work"), h("span", { class: "mtg-job-msg" }, i.message), act("Try again", "refresh", "", () => run()), thisPc(i.hasTranscript ? "notes" : undefined)));
     } else if (i.state === "cancelled") {
-      jobBox.append(row(h("strong", null, "Stopped"), h("span", { class: "mtg-job-msg" }, i.hasTranscript ? "The transcript is there; the notes weren't finished." : ""), act(i.hasTranscript ? "Write the notes" : "Transcribe", "play", "primary", () => run(i.hasTranscript ? { redo: "notes" } : undefined))));
+      jobBox.append(row(h("strong", null, "Stopped"), h("span", { class: "mtg-job-msg" }, i.hasTranscript ? "The transcript is there; the notes weren't finished." : ""), act(i.hasTranscript ? "Write the notes" : "Transcribe", "play", "primary", () => run(i.hasTranscript ? { redo: "notes" } : undefined)), thisPc(i.hasTranscript ? "notes" : undefined)));
     } else if (i.state === "off") {
-      jobBox.append(row(h("strong", null, "Transcripts are off for this meeting"), act("Transcribe now", "play", "primary", () => void meetApi.aiOff(rec.id, false).then(() => run()))));
+      jobBox.append(row(h("strong", null, "Transcripts are off for this meeting"), act("Transcribe now", "play", "primary", () => void meetApi.aiOff(rec.id, false).then(() => run())), thisPc()), ...cloudNote());
     } else if (i.state === "none" && !i.hasTranscript) {
-      jobBox.append(row(h("strong", null, "No transcript yet"), h("span", { class: "mtg-job-msg" }, i.tracks ? `${i.tracks} speaker track${i.tracks === 1 ? "" : "s"} recorded: each person is labelled by name.` : "This recording has only the mixed sound, so everyone is labelled “Meeting”."), act("Transcribe", "play", "primary", () => run())));
+      jobBox.append(row(h("strong", null, "No transcript yet"), h("span", { class: "mtg-job-msg" }, i.tracks ? `${i.tracks} speaker track${i.tracks === 1 ? "" : "s"} recorded: each person is labelled by name.` : "This recording has only the mixed sound, so everyone is labelled “Meeting”."), act("Transcribe", "play", "primary", () => run()), thisPc()), ...cloudNote());
     } else {
       jobBox.hidden = !i.message && i.state === "done" ? true : false;
       if (!jobBox.hidden) jobBox.append(row(h("span", { class: "mtg-job-msg" }, i.message)));
@@ -168,9 +178,9 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
     const has = current.hasTranscript;
     const bn = !!doc?.segments.some((s) => s.bn || s.lang === "bn");
     const en = !!doc?.segments.some((s) => s.en || s.lang === "en");
-    const options: [Subs, string, boolean][] = [["off", "Off", true], ["orig", "Original", has], ["en", "English", has && en], ["bn", "Bangla", BANGLA_READY && has && bn]];
+    const options: [Subs, string, boolean][] = [["off", "Off", true], ["orig", "Original", has], ["en", "English", has && en], ["bn", "Bangla", banglaOn && has && bn]];
     subChips.replaceChildren(h("span", { class: "mtg-chips-label" }, icon("subtitles", 14), "Subtitles"),
-      ...options.filter(([id]) => BANGLA_READY || id !== "bn").map(([id, label, enabled]) => h("button", { class: `mtg-chip${subs === id ? " active" : ""}`, type: "button", role: "radio", "aria-checked": String(subs === id), disabled: !enabled, onclick: () => { subs = id; drawSubChips(); } }, label)));
+      ...options.filter(([id]) => banglaOn || id !== "bn").map(([id, label, enabled]) => h("button", { class: `mtg-chip${subs === id ? " active" : ""}`, type: "button", role: "radio", "aria-checked": String(subs === id), disabled: !enabled, onclick: () => { subs = id; drawSubChips(); } }, label)));
   }
 
   const playButton = h("button", { class: "btn primary", type: "button", onclick: () => void play() }, icon("play", 15), "Play");
@@ -179,7 +189,8 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
     const box = moreButton.getBoundingClientRect();
     void import("../../ui/menu").then(({ openMenu }) => openMenu(box.left, box.bottom + 4, [
       { label: "Transcribe again", icon: "refresh", action: () => void meetApi.aiRun(rec.id).catch(fail("Couldn't start")) },
-      { label: "Transcribe again with the medium model", icon: "refresh", action: () => void meetApi.aiRun(rec.id, { model: "medium" }).catch(fail("Couldn't start")) },
+      { label: "Transcribe again with the medium model", icon: "refresh", action: () => void meetApi.aiRun(rec.id, { model: "medium", processing: "local" }).catch(fail("Couldn't start")) },
+      ...(current.cloud ? [{ label: "Transcribe again on this PC (nothing is sent)", icon: "desktop" as const, action: () => void meetApi.aiRun(rec.id, { processing: "local" }).catch(fail("Couldn't start")) }] : []),
       { label: "Write the notes again", icon: "pencil", disabled: !current.hasTranscript, action: () => void meetApi.aiRun(rec.id, { redo: "notes" }).catch(fail("Couldn't start")) },
       { label: "Turn transcripts off for this meeting", icon: "stop", action: () => void meetApi.aiOff(rec.id, true).catch(fail("Couldn't change it")) },
     ]));
@@ -199,7 +210,7 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
     if (!doc) return h("p", { class: "mtg-loading" }, current.state === "running" || current.state === "queued" ? "The transcript appears when it's done." : "No transcript yet.");
     const segments = doc.segments;
     const search = h("input", { class: "ops-input mtg-search", type: "search", placeholder: "Search the transcript", "aria-label": "Search the transcript", value: query });
-    const switcher = h("div", { class: "mtg-chips" }, ...(([["orig", "As spoken"], ["en", "English"], ["bn", "Bangla"]] as [Shown, string][]).filter(([id]) => BANGLA_READY || id !== "bn")).map(([id, label]) => h("button", { class: `mtg-chip${shown === id ? " active" : ""}`, type: "button", onclick: () => { shown = id; drawPane(); } }, label)));
+    const switcher = h("div", { class: "mtg-chips" }, ...(([["orig", "As spoken"], ["en", "English"], ["bn", "Bangla"]] as [Shown, string][]).filter(([id]) => banglaOn || id !== "bn")).map(([id, label]) => h("button", { class: `mtg-chip${shown === id ? " active" : ""}`, type: "button", onclick: () => { shown = id; drawPane(); } }, label)));
     const list = h("div", { class: "mtg-lines" });
     const count = h("span", { class: "mtg-count" });
     const paint = () => {
@@ -297,7 +308,7 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
       section(head[2], actions),
       section(head[3], stringList(n.questions, "Add a question")),
       n.chapters.length ? section(head[4], chapters) : null,
-      h("p", { class: "sf-hint" }, `Written by ${notes.model.replace(/-q\d.*$/i, "")} on this PC${notes.edited ? "; edited by you" : ""}. Changes save by themselves.`));
+      h("p", { class: "sf-hint" }, `Written by ${notes.model.replace(/-q\d.*$/i, "")} ${notes.provider ? `through ${CLOUD_NAME[notes.provider] ?? notes.provider}` : "on this PC"}${notes.edited ? "; edited by you" : ""}. Changes save by themselves.`));
   }
 
   async function exportFile(markdown: string) {
@@ -353,6 +364,11 @@ export function createMeetingPage(shell: ShellContext, rec: Recording, info: AiI
   drawJob();
   drawPane();
   void refreshModels().then(drawJob);
+  void meetApi.aiSettings().then((settings) => {
+    banglaOn = banglaAvailable(settings);
+    drawSubChips();
+    drawPane();
+  }, () => undefined);
   void load();
 
   return {

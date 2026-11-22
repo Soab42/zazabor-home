@@ -104,6 +104,34 @@ export interface AiSettings {
   notesLang: "en" | "bn" | "both";
   /** Translate English speech into Bangla subtitles (slow: the notes model does it). */
   bnSubs: boolean;
+  /** "local": on this PC (the default). "cloud": the user's own API keys. */
+  processing: "local" | "cloud";
+  /** The user confirmed that audio and transcript text go to the chosen providers. */
+  cloudConsent: boolean;
+  /** If the cloud fails, do the job on this PC instead. */
+  fallbackLocal: boolean;
+  /** Speech to text in the cloud (Claude takes no audio). */
+  sttProvider: CloudId;
+  /** Translation and notes in the cloud. */
+  llmProvider: CloudId;
+  /** The model the user chose, by `<provider>.stt` or `<provider>.llm`; missing means the default. */
+  cloudModels: Record<string, string>;
+  /** Bangla is available: on this PC when its models can, else only with a cloud speech-to-text provider. Set by Zazabor, ignored when saving. */
+  banglaOn: boolean;
+}
+
+export type CloudId = "claude" | "openai" | "gemini" | "openrouter";
+
+/** A cloud provider and whether a key is saved for it. The key itself never reaches the page. */
+export interface CloudProvider {
+  id: CloudId;
+  label: string;
+  name: string;
+  canTranscribe: boolean;
+  keySet: boolean;
+  keyPage: string;
+  sttDefault: string | null;
+  llmDefault: string;
 }
 
 /** What the card of a recording shows about its transcript job. */
@@ -120,6 +148,10 @@ export interface AiInfo {
   hasNotes: boolean;
   /** Model ids a "needs-models" job waits for ("small", "medium", "qwen"). */
   missing: string[];
+  /** Minutes of audio a cloud run would send (0 while Cloud is off). */
+  sendMinutes: number;
+  /** "OpenAI", "Gemini"… when a run would send the sound to a cloud provider, else empty. */
+  cloud: string;
 }
 
 export interface AiModel {
@@ -181,6 +213,8 @@ export interface NotesDoc {
   version: number;
   language: "en" | "bn" | "both";
   model: string;
+  /** The cloud provider that wrote them ("claude", "openai", …); missing when the local model did. */
+  provider?: CloudId;
   generatedAt: number;
   edited: boolean;
   en: Notes | null;
@@ -254,8 +288,14 @@ export const meetApi = {
   aiModelCancel: (id: string) => call<void>("meet_ai_model_cancel", { id }),
   aiModelRemove: (id: string) => call<void>("meet_ai_model_remove", { id }),
   /** Transcribes (and writes the notes); `redo: "notes"` keeps the transcript. */
-  aiRun: (id: string, options?: { redo?: "all" | "notes"; model?: AiSettings["model"] }) => call<void>("meet_ai_run", { id, options: options ?? null }),
+  aiRun: (id: string, options?: { redo?: "all" | "notes"; model?: AiSettings["model"]; processing?: "local" }) => call<void>("meet_ai_run", { id, options: options ?? null }),
   aiCancel: (id: string) => call<void>("meet_ai_cancel", { id }),
+  // Cloud AI (Claude, OpenAI, Gemini, OpenRouter): keys live in the system keyring; the page only learns `keySet`.
+  aiCloudState: () => call<CloudProvider[]>("meet_ai_cloud_state"),
+  aiCloudKeySet: (provider: CloudId, key: string) => call<CloudProvider[]>("meet_ai_cloud_key_set", { provider, key }),
+  aiCloudKeyClear: (provider: CloudId) => call<CloudProvider[]>("meet_ai_cloud_key_clear", { provider }),
+  /** A tiny request with the saved key: resolves with a sentence, rejects with why it failed (invalid key, no credit, no connection). */
+  aiCloudTest: (provider: CloudId) => call<string>("meet_ai_cloud_test", { provider }),
   /** Switches the automatic transcript off (or on again) for one meeting. */
   aiOff: (id: string, off: boolean) => call<void>("meet_ai_off", { id, off }),
   transcript: (id: string) => call<TranscriptDoc>("meet_transcript", { id }),

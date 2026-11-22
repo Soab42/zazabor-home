@@ -5,8 +5,10 @@ import type { SettingsRow } from "../../appearance";
 import type { Config } from "../../config";
 import type { Category } from "../../shell/settings";
 import { formatBytes, h } from "../../ui/dom";
-import { errorText, meetApi, onMeet, type AiModel, type AiSettings, type MeetState } from "./api";
-import { BANGLA_READY } from "./meeting";
+import { confirmSheet } from "../files/ops/sheets";
+import { icon } from "../../ui/icons";
+import { errorText, meetApi, onMeet, type AiModel, type AiSettings, type CloudId, type CloudProvider, type MeetState } from "./api";
+import { BANGLA_READY, banglaAvailable } from "./meeting";
 
 /**
  * Settings → Meet: the outside link (a Cloudflare quick tunnel, or the user's own domain through a
@@ -135,7 +137,8 @@ export function meetCategory(_host: { readonly config: Config }): Category {
   const folderRow: SettingsRow = { label: "Recordings folder", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Recordings go to"), folder), show) };
 
   // ---- transcripts and notes (docs/plans/meet-notes.md)
-  let ai: AiSettings = { auto: true, model: "auto", notesLang: "en", bnSubs: BANGLA_READY };
+  let ai: AiSettings = { auto: true, model: "auto", notesLang: "en", bnSubs: BANGLA_READY, processing: "local", cloudConsent: false, fallbackLocal: false, sttProvider: "openai", llmProvider: "claude", cloudModels: {}, banglaOn: BANGLA_READY };
+  let providers: CloudProvider[] = [];
   const saveAi = (patch: Partial<AiSettings>) => {
     const next = { ...ai, ...patch };
     void meetApi.setAiSettings(next).then((saved) => {
@@ -149,7 +152,15 @@ export function meetCategory(_host: { readonly config: Config }): Category {
   };
   const autoInput = h("input", { type: "checkbox", class: "switch", role: "switch" });
   autoInput.addEventListener("change", () => saveAi({ auto: autoInput.checked }));
-  const autoRow: SettingsRow = { label: "Transcribe automatically", el: h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Transcribe and take notes automatically"), h("p", { class: "sf-hint" }, BANGLA_READY ? "When a recorded meeting ends, this PC writes who said what (Bangla or English), subtitles in both languages and notes. Nothing leaves the computer. You can turn it off for one meeting, or run it later from the meeting." : "When a recorded meeting ends, this PC writes who said what, English subtitles and notes. Nothing leaves the computer. Bangla is coming in a later update. You can turn it off for one meeting, or run it later from the meeting.")), autoInput) };
+  const autoHint = h("p", { class: "sf-hint" });
+  const autoRow: SettingsRow = { label: "Transcribe automatically", el: h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Transcribe and take notes automatically"), autoHint), autoInput) };
+  function drawAutoHint() {
+    const turnOff = "You can turn it off for one meeting, or run it later from the meeting.";
+    autoHint.textContent = cloudNow()
+      ? `When a recorded meeting ends, the sound and then the transcript text are sent to the providers you chose below, and they write who said what (Bangla or English), subtitles in both languages and notes. ${turnOff}`
+      : BANGLA_READY ? `When a recorded meeting ends, this PC writes who said what (Bangla or English), subtitles in both languages and notes. Nothing leaves the computer. ${turnOff}`
+      : `When a recorded meeting ends, this PC writes who said what, English subtitles and notes. Nothing leaves the computer. Bangla needs Cloud AI for now. ${turnOff}`;
+  }
   const choice = <T extends string>(label: string, options: [T, string][], pick: (v: T) => void) => {
     const select = h("select", { class: "ops-input mtg-settings-select", "aria-label": label }, ...options.map(([value, name]) => h("option", { value }, name)));
     select.addEventListener("change", () => pick(select.value as T));
@@ -162,6 +173,161 @@ export function meetCategory(_host: { readonly config: Config }): Category {
   const bnInput = h("input", { type: "checkbox", class: "switch", role: "switch" });
   bnInput.addEventListener("change", () => saveAi({ bnSubs: bnInput.checked }));
   const bnRow: SettingsRow = { label: "Bangla subtitles", el: h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Translate English speech into Bangla subtitles"), h("p", { class: "sf-hint" }, "Done by the notes model; it adds time to a long meeting.")), bnInput) };
+  // ---- processing: on this PC (default) or Cloud AI with the user's own keys
+  const cloudNow = () => ai.processing === "cloud" && ai.cloudConsent;
+  const nameOf = (id: CloudId) => providers.find((p) => p.id === id)?.name ?? id;
+  const labelOf = (id: CloudId) => providers.find((p) => p.id === id)?.label ?? id;
+  const processingRadio = (value: "local" | "cloud", label: string, hint: string) => {
+    const input = h("input", { type: "radio", name: "meet-processing", value });
+    input.addEventListener("change", () => void chooseProcessing(value));
+    return { input, el: h("label", { class: "mtg-radio mtg-radio-block" }, input, h("span", null, h("span", { class: "mtg-radio-title" }, label), h("span", { class: "sf-hint mtg-radio-hint" }, hint))) };
+  };
+  const localRadio = processingRadio("local", "On this PC (default)", "Whisper and a small notes model run here. Nothing leaves the computer.");
+  const cloudRadio = processingRadio("cloud", "Cloud AI (your own API keys)", "Claude, OpenAI, Gemini or OpenRouter do the listening and writing, and understand Bangla well. Their prices and terms apply to your key.");
+  const processingRow: SettingsRow = { label: "Processing", el: h("div", { class: "sf-row wide" }, h("span", { class: "sf-label" }, "Processing"), localRadio.el, cloudRadio.el) };
+  async function chooseProcessing(value: "local" | "cloud") {
+    if (value === "local") return saveAi({ processing: "local" });
+    if (!ai.cloudConsent) {
+      const ok = await confirmSheet({
+        title: "Send meetings to the cloud?",
+        message: `Meeting audio (speech to text) will be sent to ${nameOf(ai.sttProvider)}, and transcript text (notes and translation) to ${nameOf(ai.llmProvider)}, using your own API keys. Their terms apply and you pay them. Nothing is sent while Cloud AI is off, and you can use this PC instead for any meeting.`,
+        confirmLabel: "Turn On Cloud AI",
+        icon: "upload",
+      });
+      if (!ok) return drawAi();
+      return saveAi({ processing: "cloud", cloudConsent: true });
+    }
+    saveAi({ processing: "cloud" });
+  }
+  const noticeText = h("p", { class: "sf-hint mtg-notice" });
+  const noticeRow: SettingsRow = { label: "What is sent", el: h("div", { class: "sf-row plain mtg-notice-row" }, h("span", { class: "mtg-notice-icon" }, icon("upload", 16)), noticeText) };
+  const providerSelect = (label: string, pick: (id: CloudId) => void) => {
+    const select = h("select", { class: "ops-input mtg-settings-select", "aria-label": label });
+    select.addEventListener("change", () => pick(select.value as CloudId));
+    return select;
+  };
+  const modelField = (label: string, task: "stt" | "llm") => {
+    const input = h("input", { class: "ops-input mtg-settings-input mtg-model-input", type: "text", spellcheck: false, autocomplete: "off", autocapitalize: "off", "aria-label": label });
+    const commit = () => {
+      const provider = task === "stt" ? ai.sttProvider : ai.llmProvider;
+      const key = `${provider}.${task}`;
+      const value = input.value.trim();
+      if ((ai.cloudModels[key] ?? "") === value) return;
+      const cloudModels = { ...ai.cloudModels };
+      if (value) cloudModels[key] = value;
+      else delete cloudModels[key];
+      saveAi({ cloudModels });
+    };
+    input.addEventListener("change", commit);
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") commit();
+    });
+    return input;
+  };
+  const sttSelect = providerSelect("Speech-to-text provider", (sttProvider) => saveAi({ sttProvider }));
+  const sttModel = modelField("Speech-to-text model", "stt");
+  const sttRow: SettingsRow = { label: "Speech to text", el: h("div", { class: "sf-row wide" }, h("span", { class: "sf-label" }, "Speech to text"),
+    h("p", { class: "sf-hint" }, "Who listens to the meeting. Claude can't take audio, so it isn't offered here."), sttSelect, sttModel) };
+  const llmSelect = providerSelect("Translation and notes provider", (llmProvider) => saveAi({ llmProvider }));
+  const llmModel = modelField("Translation and notes model", "llm");
+  const llmRow: SettingsRow = { label: "Translation and notes", el: h("div", { class: "sf-row wide" }, h("span", { class: "sf-label" }, "Translation and notes"),
+    h("p", { class: "sf-hint" }, "Who writes the subtitles in the other language and the notes. Only transcript text is sent to it, never audio."), llmSelect, llmModel) };
+  const fallbackInput = h("input", { type: "checkbox", class: "switch", role: "switch" });
+  fallbackInput.addEventListener("change", () => saveAi({ fallbackLocal: fallbackInput.checked }));
+  const fallbackRow: SettingsRow = { label: "Fall back", el: h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Fall back to this PC if the cloud fails"),
+    h("p", { class: "sf-hint" }, "Off: a failed run says what went wrong and nothing else happens. On: this PC does the job instead (English only, and it needs the models below).")), fallbackInput) };
+
+  // One panel per provider in use: its key (kept in the system keyring, never shown again), a test, and where to get one.
+  const keysBox = h("div", { class: "sf-row wide" });
+  const keysRow: SettingsRow = { label: "API keys", el: keysBox };
+  const panels = new Map<CloudId, { el: HTMLElement; update: (p: CloudProvider) => void }>();
+  function keyPanel(first: CloudProvider) {
+    const input = h("input", { class: "ops-input mtg-settings-input", type: "password", spellcheck: false, autocomplete: "off", "aria-label": `${first.name} API key` });
+    const saved = h("span", { class: "mtg-token-saved" }, "Saved ✓ — replace or remove it");
+    const replace = h("button", { class: "btn small ghost", type: "button" }, "Replace");
+    const remove = h("button", { class: "btn small ghost", type: "button" }, "Remove");
+    const savedLine = h("div", { class: "pl-settings-buttons mtg-token-line" }, saved, replace, remove);
+    const save = h("button", { class: "btn small primary", type: "button" }, "Save key");
+    const test = h("button", { class: "btn small", type: "button" }, "Test key");
+    const result = h("p", { class: "sf-hint mtg-test", hidden: true });
+    const where = h("p", { class: "sf-hint" });
+    let current = first;
+    const work = (button: HTMLButtonElement, job: Promise<unknown>) => {
+      button.disabled = true;
+      void job.finally(() => (button.disabled = false));
+    };
+    const edit = h("div", { class: "pl-settings-buttons mtg-key-edit" }, input, save);
+    const doSave = () => {
+      const key = input.value.trim();
+      if (!key) return;
+      work(save, meetApi.aiCloudKeySet(current.id, key).then((list) => {
+        input.value = "";
+        result.hidden = true;
+        problem.hidden = true;
+        setProviders(list);
+      }, fail));
+    };
+    save.addEventListener("click", doSave);
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") doSave();
+    });
+    replace.addEventListener("click", () => {
+      edit.hidden = false;
+      input.focus();
+    });
+    remove.addEventListener("click", () => work(remove, meetApi.aiCloudKeyClear(current.id).then((list) => {
+      result.hidden = true;
+      setProviders(list);
+    }, fail)));
+    test.addEventListener("click", () => {
+      result.hidden = false;
+      result.dataset.result = "busy";
+      result.textContent = "Testing…";
+      work(test, meetApi.aiCloudTest(current.id).then((message) => {
+        result.dataset.result = "this-pc";
+        result.textContent = `✓ ${message}`;
+      }, (err) => {
+        result.dataset.result = "unreachable";
+        result.textContent = `✗ ${errorText(err)}`;
+      }));
+    });
+    const el = h("div", { class: "mtg-key-panel", "data-provider": first.id }, h("span", { class: "sf-label" }, `${first.label} key`), savedLine, edit, h("div", { class: "pl-settings-buttons" }, test), result, where);
+    return {
+      el,
+      update(p: CloudProvider) {
+        current = p;
+        savedLine.hidden = !p.keySet;
+        edit.hidden = p.keySet;
+        input.placeholder = `Paste your ${p.name} API key`;
+        test.disabled = !p.keySet;
+        test.title = p.keySet ? "Sends a tiny request with the saved key (a tiny charge)" : "Save a key first";
+        where.textContent = `Get one at ${p.keyPage.replace(/^https:\/\//, "")}. It is kept in the system keyring (or, with none, in a file only you can read) and is never shown again.`;
+      },
+    };
+  }
+  function setProviders(list: CloudProvider[]) {
+    providers = list;
+    drawAi();
+  }
+  function drawKeys() {
+    const used = [...new Set([ai.sttProvider, ai.llmProvider])];
+    const nodes: HTMLElement[] = [];
+    for (const id of used) {
+      const p = providers.find((x) => x.id === id);
+      if (!p) continue;
+      let panel = panels.get(id);
+      if (!panel) {
+        panel = keyPanel(p);
+        panels.set(id, panel);
+      }
+      panel.update(p);
+      nodes.push(panel.el);
+    }
+    keysBox.replaceChildren(h("span", { class: "sf-label" }, "API keys"), ...nodes);
+  }
+
   const modelsBox = h("div", { class: "sf-row wide" });
   const modelsRow: SettingsRow = { label: "Models", el: modelsBox };
   let models: AiModel[] = [];
@@ -185,6 +351,30 @@ export function meetCategory(_host: { readonly config: Config }): Category {
     modelSelect.value = ai.model;
     langSelect.value = ai.notesLang;
     bnInput.checked = ai.bnSubs;
+    const cloud = ai.processing === "cloud";
+    localRadio.input.checked = !cloud;
+    cloudRadio.input.checked = cloud;
+    for (const row of [noticeRow, sttRow, llmRow, keysRow, fallbackRow]) row.el.hidden = !cloud;
+    // Bangla: this PC's gate, or a cloud speech-to-text provider.
+    const bangla = banglaAvailable(ai);
+    langRow.el.hidden = !bangla;
+    bnRow.el.hidden = !bangla;
+    fallbackInput.checked = ai.fallbackLocal;
+    sttSelect.replaceChildren(...providers.filter((p) => p.canTranscribe).map((p) => h("option", { value: p.id }, p.label)));
+    llmSelect.replaceChildren(...providers.map((p) => h("option", { value: p.id }, p.label)));
+    sttSelect.value = ai.sttProvider;
+    llmSelect.value = ai.llmProvider;
+    const defaults = (id: CloudId, task: "stt" | "llm") => {
+      const p = providers.find((x) => x.id === id);
+      return (task === "stt" ? p?.sttDefault : p?.llmDefault) ?? "";
+    };
+    for (const [input, id, task] of [[sttModel, ai.sttProvider, "stt"], [llmModel, ai.llmProvider, "llm"]] as const) {
+      input.placeholder = defaults(id, task);
+      if (document.activeElement !== input) input.value = ai.cloudModels[`${id}.${task}`] ?? "";
+    }
+    noticeText.textContent = `Meeting audio (speech to text) will be sent to ${nameOf(ai.sttProvider)}, and transcript text (notes and translation) to ${nameOf(ai.llmProvider)}, with your own key${ai.sttProvider === ai.llmProvider ? "" : "s"}. Nothing is sent unless Cloud AI is on. ${labelOf(ai.sttProvider)} hears each speaker's track on its own, so each person keeps their name.`;
+    drawAutoHint();
+    drawKeys();
   }
 
   // ---- connection
@@ -248,14 +438,15 @@ export function meetCategory(_host: { readonly config: Config }): Category {
     groups: [
       { title: "Outside link", rows: [tunnelRow, modeRow, domainRow, addressRow] },
       { title: "Recordings", rows: [folderRow] },
-      { title: "Transcripts and notes", rows: BANGLA_READY ? [autoRow, modelChoiceRow, langRow, bnRow, modelsRow] : [autoRow, modelChoiceRow, modelsRow] },
+      { title: "Transcripts and notes", rows: [autoRow, processingRow, noticeRow, sttRow, llmRow, keysRow, fallbackRow, modelChoiceRow, langRow, bnRow, modelsRow] },
       { title: "Connection", rows: [stunRow, turnRow] },
     ],
     refresh() {
       problem.hidden = true;
       void meetApi.state().then(draw, () => draw(null));
-      void meetApi.aiSettings().then((s) => {
+      void Promise.all([meetApi.aiSettings(), meetApi.aiCloudState().catch(() => [] as CloudProvider[])]).then(([s, list]) => {
         ai = s;
+        providers = list;
         drawAi();
       }, () => undefined);
       void refreshModels();

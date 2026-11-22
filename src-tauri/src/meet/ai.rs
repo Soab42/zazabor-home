@@ -16,15 +16,21 @@ use serde_json::{json, Value};
 use super::store::{self, Recording};
 use super::transcript::{self, Doc, Heard, Notes, RawSeg, Seg, Track};
 use super::{lock, now_ms, Hub, Result};
+use crate::ai::cloud::Provider;
 use crate::ai::llm::{self, Llm};
 use crate::ai::models;
 use crate::ai::whisper::{self, mel, Options};
 
+mod cloud;
+pub use cloud::ProviderState;
+
 /// A recording that hasn't had a chunk for this long has ended.
 const IDLE_MS: i64 = 45_000;
-/// Bangla transcription, translation and notes. Off in 0.3.4: stock Whisper and Qwen gave
-/// unusable Bangla in tests, so Bangla speech gets a placeholder line until Bangla-tuned models
-/// are in (docs/plans/meet-notes.md). The page has the same switch (`BANGLA_READY`).
+/// Bangla transcription, translation and notes on this PC. Off in 0.3.4: stock Whisper and Qwen
+/// gave unusable Bangla in tests, so Bangla speech gets a placeholder line until Bangla-tuned
+/// models are in (docs/plans/meet-notes.md). With a cloud speech-to-text provider Bangla is on
+/// (`Settings::bangla_on`): cloud models handle it. The page has the same switch (`BANGLA_READY`
+/// for this PC, `banglaOn` from the settings).
 pub const BANGLA_READY: bool = false;
 /// What Bangla speech shows while `BANGLA_READY` is off.
 const BANGLA_PLACEHOLDER: &str = "[Bangla: transcription coming in a later update]";
@@ -44,12 +50,93 @@ pub struct Settings {
     pub notes_lang: String,
     /// Translate English speech into Bangla subtitles with the LLM (slow).
     pub bn_subs: bool,
+    /// "local" (this PC, the default) or "cloud" (the user's own API keys).
+    #[serde(default = "local")]
+    pub processing: String,
+    /// The user confirmed that audio and transcript text go to the chosen providers. Cloud does
+    /// nothing until this is true.
+    #[serde(default)]
+    pub cloud_consent: bool,
+    /// If the cloud fails, do the job on this PC instead (off: say what went wrong).
+    #[serde(default)]
+    pub fallback_local: bool,
+    /// Speech to text in the cloud: "openai", "gemini" or "openrouter" (Claude takes no audio).
+    #[serde(default = "default_stt")]
+    pub stt_provider: String,
+    /// Translation and notes in the cloud: "claude", "openai", "gemini" or "openrouter".
+    #[serde(default = "default_llm")]
+    pub llm_provider: String,
+    /// The model the user chose, by "<provider>.stt" or "<provider>.llm"; absent means the default.
+    #[serde(default)]
+    pub cloud_models: HashMap<String, String>,
+    /// Whether Bangla is on (this PC's `BANGLA_READY`, or Cloud with a speech-to-text provider).
+    /// Worked out here, never read from the page.
+    #[serde(default, skip_deserializing)]
+    pub bangla_on: bool,
+}
+
+fn local() -> String {
+    "local".into()
+}
+fn default_stt() -> String {
+    "openai".into()
+}
+fn default_llm() -> String {
+    "claude".into()
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto: true, model: "auto".into(), notes_lang: "en".into(), bn_subs: BANGLA_READY }
+        Settings {
+            auto: true,
+            model: "auto".into(),
+            notes_lang: "en".into(),
+            bn_subs: BANGLA_READY,
+            processing: local(),
+            cloud_consent: false,
+            fallback_local: false,
+            stt_provider: default_stt(),
+            llm_provider: default_llm(),
+            cloud_models: HashMap::new(),
+            bangla_on: BANGLA_READY,
+        }
     }
+}
+
+/// The two jobs a model does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Task {
+    Stt,
+    Llm,
+}
+
+impl Settings {
+    /// The cloud is used: chosen, and the user confirmed what is sent.
+    pub fn cloud_on(&self) -> bool {
+        self.processing == "cloud" && self.cloud_consent
+    }
+
+    pub fn stt(&self) -> Option<Provider> {
+        Provider::from_id(&self.stt_provider).filter(|p| p.can_transcribe())
+    }
+
+    pub fn llm(&self) -> Option<Provider> {
+        Provider::from_id(&self.llm_provider)
+    }
+
+    /// The model for a provider and task: the user's, or the provider's default.
+    pub fn model_for(&self, provider: Provider, task: Task) -> String {
+        let key = format!("{}.{}", provider.id(), if task == Task::Stt { "stt" } else { "llm" });
+        self.cloud_models.get(&key).and_then(|m| crate::ai::cloud::clean_model(m)).unwrap_or_else(|| match task {
+            Task::Stt => provider.default_stt_model().unwrap_or_default().to_string(),
+            Task::Llm => provider.default_llm_model().to_string(),
+        })
+    }
+}
+
+/// Bangla is available when this PC can do it, or when the cloud hears the meeting.
+pub fn bangla_gate(local_ready: bool, cloud_on: bool) -> bool {
+    local_ready || cloud_on
 }
 
 // ---- files beside a recording
@@ -179,6 +266,10 @@ pub struct Info {
     pub has_transcript: bool,
     pub has_notes: bool,
     pub missing: Vec<String>,
+    /// Minutes of audio a cloud run would send (0 while Cloud is off).
+    pub send_minutes: u64,
+    /// "OpenAI", "Gemini"... when a run would use the cloud's speech to text, else empty.
+    pub cloud: String,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -188,31 +279,70 @@ pub struct RunOptions {
     pub redo: Option<String>,
     /// "auto", "small" or "medium" for this run.
     pub model: Option<String>,
+    /// "local" does this run on this PC even when Cloud is on ("Use this PC instead").
+    pub processing: Option<String>,
 }
 
 impl Hub {
     pub fn ai_settings(&self) -> Settings {
         self.with_db(|c| {
             let d = Settings::default();
+            let processing = store::meta(c, "ai_processing").filter(|v| v == "cloud").unwrap_or_else(local);
+            let cloud_consent = store::meta(c, "ai_cloud_consent").is_some_and(|v| v == "1");
+            let stt_provider = store::meta(c, "ai_stt_provider").filter(|v| Provider::from_id(v).is_some_and(|p| p.can_transcribe())).unwrap_or(d.stt_provider);
+            let llm_provider = store::meta(c, "ai_llm_provider").filter(|v| Provider::from_id(v).is_some()).unwrap_or(d.llm_provider);
+            let cloud_models: HashMap<String, String> = store::meta(c, "ai_cloud_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+            let bangla = bangla_gate(BANGLA_READY, processing == "cloud" && cloud_consent);
             Ok(Settings {
                 auto: store::meta(c, "ai_auto").map_or(d.auto, |v| v != "0"),
                 model: store::meta(c, "ai_model").filter(|v| ["auto", "small", "medium"].contains(&v.as_str())).unwrap_or(d.model),
-                notes_lang: if BANGLA_READY { store::meta(c, "ai_notes_lang").filter(|v| ["en", "bn", "both"].contains(&v.as_str())).unwrap_or(d.notes_lang) } else { "en".into() },
-                bn_subs: BANGLA_READY && store::meta(c, "ai_bn_subs").map_or(d.bn_subs, |v| v != "0"),
+                notes_lang: if bangla { store::meta(c, "ai_notes_lang").filter(|v| ["en", "bn", "both"].contains(&v.as_str())).unwrap_or(d.notes_lang) } else { "en".into() },
+                bn_subs: bangla && store::meta(c, "ai_bn_subs").map_or(d.bn_subs, |v| v != "0"),
+                processing,
+                cloud_consent,
+                fallback_local: store::meta(c, "ai_fallback_local").is_some_and(|v| v == "1"),
+                stt_provider,
+                llm_provider,
+                cloud_models,
+                bangla_on: bangla,
             })
         })
         .unwrap_or_default()
     }
 
     pub fn set_ai_settings(&self, s: &Settings) -> Result<Settings> {
-        if !["auto", "small", "medium"].contains(&s.model.as_str()) || !["en", "bn", "both"].contains(&s.notes_lang.as_str()) {
+        if !["auto", "small", "medium"].contains(&s.model.as_str()) || !["en", "bn", "both"].contains(&s.notes_lang.as_str()) || !["local", "cloud"].contains(&s.processing.as_str()) {
             return Err("That isn't one of the choices.".into());
+        }
+        if !Provider::from_id(&s.stt_provider).is_some_and(|p| p.can_transcribe()) {
+            return Err("That provider can't turn speech into text. Choose OpenAI, Gemini or OpenRouter.".into());
+        }
+        if Provider::from_id(&s.llm_provider).is_none() {
+            return Err("That isn't one of the providers.".into());
+        }
+        if s.processing == "cloud" && !s.cloud_consent {
+            return Err("Confirm what is sent to the cloud before turning it on.".into());
+        }
+        let mut models = HashMap::new();
+        for (k, m) in &s.cloud_models {
+            let valid_key = k.split_once('.').is_some_and(|(p, t)| Provider::from_id(p).is_some() && ["stt", "llm"].contains(&t));
+            if !valid_key || m.trim().is_empty() {
+                continue;
+            }
+            let clean = crate::ai::cloud::clean_model(m).ok_or("A model name may only have letters, digits and - . _ : / ~")?;
+            models.insert(k.clone(), clean);
         }
         self.with_db(|c| {
             store::set_meta(c, "ai_auto", if s.auto { "1" } else { "0" })?;
             store::set_meta(c, "ai_model", &s.model)?;
             store::set_meta(c, "ai_notes_lang", &s.notes_lang)?;
-            store::set_meta(c, "ai_bn_subs", if s.bn_subs { "1" } else { "0" })
+            store::set_meta(c, "ai_bn_subs", if s.bn_subs { "1" } else { "0" })?;
+            store::set_meta(c, "ai_processing", &s.processing)?;
+            store::set_meta(c, "ai_cloud_consent", if s.cloud_consent { "1" } else { "0" })?;
+            store::set_meta(c, "ai_fallback_local", if s.fallback_local { "1" } else { "0" })?;
+            store::set_meta(c, "ai_stt_provider", &s.stt_provider)?;
+            store::set_meta(c, "ai_llm_provider", &s.llm_provider)?;
+            store::set_meta(c, "ai_cloud_models", &serde_json::to_string(&models).map_err(|e| e.to_string())?)
         })?;
         Ok(self.ai_settings())
     }
@@ -328,15 +458,27 @@ impl Hub {
     pub fn ai_infos(&self) -> Result<Vec<Info>> {
         let recs = self.recordings()?;
         let jobs = lock(&self.ai.jobs).clone();
-        Ok(recs.iter().map(|r| self.info_of(r, jobs.get(&r.id))).collect())
+        let settings = self.ai_settings();
+        Ok(recs.iter().map(|r| self.info_of(r, jobs.get(&r.id), &settings)).collect())
     }
 
-    fn info_of(&self, r: &Recording, job: Option<&Arc<Job>>) -> Info {
+    fn info_of(&self, r: &Recording, job: Option<&Arc<Job>>, settings: &Settings) -> Info {
         let rec = Path::new(&r.path);
         let p = paths(rec);
+        let tracks = list_tracks(rec);
+        let (send_minutes, cloud) = match settings.stt().filter(|_| settings.cloud_on()) {
+            Some(provider) => {
+                let total = (r.ended_at.unwrap_or(r.started_at) - r.started_at).max(0) as f64 / 1000.0;
+                let secs: f64 = if tracks.is_empty() { total } else { tracks.iter().map(|t| (total - t.offset).max(0.0)).sum() };
+                ((secs / 60.0).ceil() as u64, provider.name().to_string())
+            }
+            None => (0, String::new()),
+        };
         let mut info = Info {
             id: r.id.clone(),
-            tracks: list_tracks(rec).len(),
+            tracks: tracks.len(),
+            send_minutes,
+            cloud,
             state: "none".into(),
             stage: String::new(),
             progress: 0.0,
@@ -536,6 +678,21 @@ impl Hub {
             s
         };
         let redo_notes = opts.redo.as_deref() == Some("notes");
+        let mut settings = settings;
+        if settings.cloud_on() && opts.processing.as_deref() != Some("local") {
+            match self.run_cloud_job(r, job, &settings, redo_notes) {
+                Err(e) if e != "Cancelled" && settings.fallback_local => {
+                    eprintln!("[meet-ai] the cloud job failed; doing it on this PC");
+                    self.step(&r.id, job, "transcribe", 0.0, "The cloud didn't work; doing it on this PC instead...");
+                }
+                done => return done,
+            }
+        }
+        // On this PC only what this PC can do: English, until Bangla-tuned models are in.
+        if !BANGLA_READY {
+            settings.notes_lang = "en".into();
+            settings.bn_subs = false;
+        }
         let rec_path = PathBuf::from(&r.path);
         let p = paths(&rec_path);
         let (small, medium, qwen) = plan_models(&self.data_dir, &settings, redo_notes && p.transcript.exists())?;
@@ -858,12 +1015,17 @@ fn translate_notes(llm: &mut Llm, job: &Job, en: &Notes) -> Result<Notes> {
 
 /// Groups of segment indices to translate together: up to 8 lines and about 900 characters.
 fn batches(segs: &[Seg], idx: &[usize]) -> Vec<Vec<usize>> {
+    batches_of(segs, idx, 8, 900)
+}
+
+/// The same with room for `lines` lines and `max_chars` characters (a cloud model takes more).
+fn batches_of(segs: &[Seg], idx: &[usize], lines: usize, max_chars: usize) -> Vec<Vec<usize>> {
     let mut out: Vec<Vec<usize>> = Vec::new();
     let mut chars = 0;
     for &i in idx {
         let len = segs[i].text.len();
         match out.last_mut() {
-            Some(b) if b.len() < 8 && chars + len <= 900 => {
+            Some(b) if b.len() < lines && chars + len <= max_chars => {
                 b.push(i);
                 chars += len;
             }
@@ -988,7 +1150,7 @@ mod tests {
         }
         let hub = Hub::new(Box::new(Quiet), conn, dir.clone(), dir.join("rec")).unwrap();
         assert_eq!(hub.ai_settings(), Settings::default());
-        let s = Settings { auto: false, model: "medium".into(), notes_lang: "both".into(), bn_subs: false };
+        let s = Settings { auto: false, model: "medium".into(), notes_lang: "both".into(), bn_subs: false, ..Default::default() };
         // While Bangla is off, Bangla notes aren't offered: what's read back is English only.
         let expect = if BANGLA_READY { s.clone() } else { Settings { notes_lang: "en".into(), ..s.clone() } };
         assert_eq!(hub.set_ai_settings(&s).unwrap(), expect);

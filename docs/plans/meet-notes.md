@@ -80,6 +80,34 @@ reuses it:
   busy (a video playing, a game, a build), and can be cancelled.
 - **Optional:** "Use Claude for better notes" (Zazabor already talks to Claude for Statements).
   Off by default. When on, it sends the transcript text, never audio, and asks first.
+  (Built as the Cloud AI option below, for notes, translation and speech to text.)
+
+### Cloud AI: the second option (`src-tauri/src/ai/cloud/`, `meet/ai/cloud.rs`)
+
+Settings → Meet → Transcripts and notes → **Processing: On this PC (default) / Cloud AI**. Nothing
+is sent unless the user chose Cloud AI and confirmed (the first time) what goes where.
+
+- **Providers**, each with its own API key in the system keyring (`meet/secret.rs`, one entry per
+  provider; never logged, never returned to the page, which only gets `keySet`), a model field
+  with a default, and a "Test key" button:
+  - Speech to text: OpenAI (`gpt-transcribe`), Gemini (`gemini-3.5-transcribe`), OpenRouter
+    (`google/gemini-3.8-flash`, any model that takes audio). Claude takes no audio.
+  - Translation and notes: Claude (`claude-opus-5-5`, structured outputs, refusal fallback),
+    OpenAI (`gpt-6.2-sol`), Gemini (`gemini-4-hydrogen`), OpenRouter (`google/gemini-3.8-flash`).
+- **What is sent:** each speaker's track as 16 kHz mono WAV in pieces (silent pieces are skipped),
+  then transcript text for translation and notes. "~N minutes of audio will be sent to X" shows on
+  the meeting page. A meeting can always be redone "on this PC instead".
+- **Failure:** the card says what went wrong (bad key, no credit, rate limit, offline). Only with
+  "Fall back to this PC if the cloud fails" ticked does the job continue on this PC (English only).
+- **Bangla:** with a cloud speech-to-text provider Bangla is on (transcripts, Bangla subtitles for
+  English speech, Bangla/English notes). `BANGLA_READY` keeps governing this PC alone.
+- **Times:** `gpt-transcribe` gives no times, so its audio goes in pieces of at most 20 s cut at
+  pauses and each piece's sentences share its time; `whisper-1` (deprecated, shuts down
+  2027-02-26) gives segment times; Gemini's transcription model gives word times, grouped into
+  subtitle segments; other models are asked for mm:ss JSON, validated for order and bounds.
+- **Tests never call the real APIs:** request building and response parsing from the docs'
+  sample shapes, a local stand-in server for headers, retries and errors, chunk and offset
+  math, the Bangla gate, the key store.
 
 ### Files
 

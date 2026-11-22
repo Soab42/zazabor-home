@@ -1,5 +1,5 @@
 import type { Account, Address, Overview } from "../mail/api";
-import type { AiInfo, AiModel, AiSettings, DomainCheck, Events, MeetMock, MeetState, Meeting, MeetingInput, NotesDoc, Recording, TranscriptDoc } from "./api";
+import type { AiInfo, AiModel, AiSettings, CloudProvider, DomainCheck, Events, MeetMock, MeetState, Meeting, MeetingInput, NotesDoc, Recording, TranscriptDoc } from "./api";
 
 /**
  * A pretend backend for working on the Meet section without one (dev builds only; see api.ts).
@@ -51,13 +51,34 @@ export function createMock(mode: string): MeetMock {
   ];
 
   // Transcripts and notes: r2 is done, r3 is being worked on, r4 waits for the models.
-  const aiSettings: AiSettings = { auto: true, model: "auto", notesLang: "both", bnSubs: true };
-  const aiInfos: AiInfo[] = [
-    { id: "r1", tracks: 0, state: "none", stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [] },
-    { id: "r2", tracks: 3, state: "done", stage: "", progress: 1, message: "14 lines from 4 min of talk.", hasTranscript: true, hasNotes: true, missing: [] },
-    { id: "r3", tracks: 2, state: "running", stage: "transcribe", progress: 0.42, message: "Transcribing 17 of 41 min…", hasTranscript: false, hasNotes: false, missing: [] },
-    { id: "r4", tracks: 0, state: "needs-models", stage: "", progress: 0, message: "Download the speech and notes models first.", hasTranscript: false, hasNotes: false, missing: ["small", "qwen"] },
+  // `?processing=cloud` in the mock mode ("1-cloud") starts with Cloud on, for looking at the settings.
+  const cloudOn = mode.endsWith("cloud");
+  const aiSettings: AiSettings = {
+    auto: true, model: "auto", notesLang: "both", bnSubs: true,
+    processing: cloudOn ? "cloud" : "local", cloudConsent: cloudOn, fallbackLocal: false, sttProvider: "openai", llmProvider: "claude", cloudModels: {}, banglaOn: cloudOn,
+  };
+  const providers: CloudProvider[] = [
+    { id: "claude", label: "Claude (Anthropic)", name: "Claude", canTranscribe: false, keySet: cloudOn, keyPage: "https://platform.claude.com/settings/keys", sttDefault: null, llmDefault: "claude-opus-5-5" },
+    { id: "openai", label: "OpenAI", name: "OpenAI", canTranscribe: true, keySet: cloudOn, keyPage: "https://platform.openai.com/api-keys", sttDefault: "gpt-transcribe", llmDefault: "gpt-6.2-sol" },
+    { id: "gemini", label: "Gemini (Google)", name: "Gemini", canTranscribe: true, keySet: false, keyPage: "https://aistudio.google.com/apikey", sttDefault: "gemini-3.5-transcribe", llmDefault: "gemini-4-hydrogen" },
+    { id: "openrouter", label: "OpenRouter", name: "OpenRouter", canTranscribe: true, keySet: false, keyPage: "https://openrouter.ai/settings/keys", sttDefault: "google/gemini-3.8-flash", llmDefault: "google/gemini-3.8-flash" },
   ];
+  const aiInfos: AiInfo[] = [
+    { id: "r1", tracks: 0, state: "none", stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [], sendMinutes: 0, cloud: "" },
+    { id: "r2", tracks: 3, state: "done", stage: "", progress: 1, message: "14 lines from 4 min of talk.", hasTranscript: true, hasNotes: true, missing: [], sendMinutes: 0, cloud: "" },
+    { id: "r3", tracks: 2, state: "running", stage: "transcribe", progress: 0.42, message: "Transcribing 17 of 41 min…", hasTranscript: false, hasNotes: false, missing: [], sendMinutes: 0, cloud: "" },
+    { id: "r4", tracks: 0, state: "needs-models", stage: "", progress: 0, message: "Download the speech and notes models first.", hasTranscript: false, hasNotes: false, missing: ["small", "qwen"], sendMinutes: 0, cloud: "" },
+  ];
+  // Cloud on: a run would send the sound (about as long as the recording, per speaker).
+  const syncCloud = () => {
+    const mins = (r: Recording) => Math.max(1, Math.ceil(((r.endedAt ?? r.startedAt) - r.startedAt) / min)) * Math.max(1, aiInfos.find((i) => i.id === r.id)?.tracks ?? 1);
+    for (const i of aiInfos) {
+      const r = recordings.find((x) => x.id === i.id);
+      const on = aiSettings.processing === "cloud" && aiSettings.cloudConsent && r;
+      i.sendMinutes = on ? mins(r) : 0;
+      i.cloud = on ? providers.find((p) => p.id === aiSettings.sttProvider)?.name ?? "" : "";
+    }
+  };
   const aiModels: AiModel[] = [
     { id: "small", label: "Whisper small", note: "Speech to text; good for English.", bytes: 487_601_967, installed: false, partial: 0, downloading: false, error: null },
     { id: "medium", label: "Whisper medium", note: "Speech to text; clearly better for Bangla.", bytes: 1_533_763_059, installed: false, partial: 0, downloading: false, error: null },
@@ -213,8 +234,27 @@ export function createMock(mode: string): MeetMock {
           return wait(result, 700);
         }
         case "meet_ai_settings": return wait(aiSettings);
-        case "meet_ai_set_settings": return wait(Object.assign(aiSettings, a.settings as AiSettings));
-        case "meet_ai_status": return wait(aiInfos);
+        case "meet_ai_set_settings": {
+          const next = a.settings as AiSettings;
+          if (next.processing === "cloud" && !next.cloudConsent) throw new Error("Confirm what is sent to the cloud before turning it on.");
+          Object.assign(aiSettings, next);
+          aiSettings.banglaOn = aiSettings.processing === "cloud" && aiSettings.cloudConsent;
+          syncCloud();
+          return wait(aiSettings);
+        }
+        case "meet_ai_cloud_state": return wait(providers);
+        case "meet_ai_cloud_key_set": {
+          if (!String(a.key ?? "").trim()) throw new Error("That doesn't look like an API key: it has no spaces and is one line.");
+          providers.find((p) => p.id === a.provider)!.keySet = true;
+          return wait(providers);
+        }
+        case "meet_ai_cloud_key_clear": { providers.find((p) => p.id === a.provider)!.keySet = false; return wait(providers); }
+        case "meet_ai_cloud_test": {
+          const p = providers.find((x) => x.id === a.provider)!;
+          if (!p.keySet) throw new Error(`Add your ${p.name} API key first.`);
+          return wait(`The key works with ${aiSettings.cloudModels[`${p.id}.llm`] || p.llmDefault}.`, 700);
+        }
+        case "meet_ai_status": syncCloud(); return wait(aiInfos);
         case "meet_ai_models": return wait(aiModels);
         case "meet_ai_model_download": {
           const m = aiModels.find((x) => x.id === a.id)!;

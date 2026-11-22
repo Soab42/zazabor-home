@@ -178,6 +178,24 @@
 .mtg-guide code { font-family: var(--mono, monospace); background: var(--control); padding: 1px 5px; border-radius: 4px; }
 .mtg-settings-stun { height: auto; padding: 8px 10px; resize: vertical; }
 
+/* Cloud AI (Settings → Meet → Transcripts and notes) */
+.mtg-radio-block { align-items: flex-start; padding: 6px 0; }
+.mtg-radio-block input { margin-top: 3px; }
+.mtg-radio-block > span { display: flex; flex-direction: column; gap: 2px; }
+.mtg-radio-title { color: var(--text); font-size: var(--text-md, 13px); }
+.mtg-radio-hint { margin: 0; }
+.mtg-notice-row { display: flex; gap: 10px; align-items: flex-start; }
+.mtg-notice-icon { color: var(--accent); margin-top: 1px; flex: none; }
+.mtg-notice { margin: 0; color: var(--text); }
+.mtg-model-input { width: 100%; max-width: 360px; font-family: var(--mono, monospace); }
+.mtg-key-panel { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; box-shadow: 0 -0.5px 0 var(--line-strong); }
+.mtg-key-panel:first-of-type { box-shadow: none; }
+.mtg-key-panel p { margin: 0; }
+.mtg-key-edit { align-items: center; }
+.mtg-key-edit input { flex: 1; margin-top: 0; max-width: 360px; }
+.mtg-cloud { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 0; }
+.mtg-cloud svg { flex: none; margin-top: 2px; }
+
 @keyframes mtg-pulse { 50% { opacity: 0.35; } }
 
 /* ---- narrow: the sidebar becomes a row on top */
