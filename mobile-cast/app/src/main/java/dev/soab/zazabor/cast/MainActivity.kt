@@ -570,7 +570,7 @@ class MainActivity : Activity() {
                 R.color.warn, "Pairing with ${status.pc}…",
                 if (status.code != null) "Compare the code on both screens" else "Confirm the code on the PC",
             )
-            is LinkStatus.Linked -> Triple(R.color.good, "Linked to ${status.pc}", "Texts, calls, photos, files and notifications show on ${status.pc}.")
+            is LinkStatus.Linked -> Triple(R.color.good, "Linked to ${status.pc}", "Texts, calls, photos, files and notifications show on ${status.pc}. Control ${status.pc} from here, or let it control this phone.")
             is LinkStatus.Problem -> Triple(R.color.bad, status.pc, status.detail)
         }
         linkDot.background = rounded(color(dot), dp(5).toFloat())
@@ -584,6 +584,10 @@ class MainActivity : Activity() {
                 linkButtons.addView(
                     if (status.repair) pill("Pair again", true) { pairAgain() } else pill("Try again", true) { LinkService.retry(this) },
                 )
+                linkButtons.addView(pill("Forget", false) { confirmForget() })
+            }
+            is LinkStatus.Linked -> {
+                linkButtons.addView(pill("Control the PC", true) { startActivity(Intent(this, RemoteActivity::class.java)) })
                 linkButtons.addView(pill("Forget", false) { confirmForget() })
             }
             else -> linkButtons.addView(pill("Forget", false) { confirmForget() })
@@ -728,6 +732,7 @@ class MainActivity : Activity() {
         } else {
             add(runtime("All files", "Browse this phone's files from the PC", Manifest.permission.WRITE_EXTERNAL_STORAGE))
         }
+        add(Need("Let the PC control this phone", "Tap, swipe and type from the PC's window. Asks you every time", { RemoteInputService.enabled(this@MainActivity) }) { explainControl() })
         add(Need("Stay linked in the background", "Keeps the link while the screen is off", {
             getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
         }) { askBattery() })
@@ -849,6 +854,25 @@ class MainActivity : Activity() {
             )
             .setPositiveButton("Open App Info") { _, _ -> openAppSettings() }
             .setNegativeButton("Not Now", null)
+            .show()
+    }
+
+    /** Says what the accessibility service does before sending the user to turn it on. */
+    private fun explainControl() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Let the PC control this phone")
+            .setMessage(
+                "Zazabor Link uses Android's accessibility service so your paired PC can tap, swipe, press Back and Home and type on this phone, from the PC's window that shows this screen.\n\n" +
+                    "• Nothing happens until the PC asks and you say yes, each time (or “Always allow” for that PC).\n" +
+                    "• A red border and a notification with Stop stay visible while it is in use.\n" +
+                    "• It does not read your screen or what you type; it only sends the taps and text the PC asks for.\n" +
+                    "• Banking apps and password fields stay black and untouchable. That's Android's rule.\n\n" +
+                    "On the next screen, open “Zazabor Link remote control” and turn it on. If Android says the setting is restricted, open the app's info, tap ⋮ and “Allow restricted settings” first.",
+            )
+            .setPositiveButton("Open Accessibility settings") { _, _ ->
+                tryStart(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .setNegativeButton("Not now", null)
             .show()
     }
 

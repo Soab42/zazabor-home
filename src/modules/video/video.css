@@ -63,6 +63,13 @@
 }
 .vp-stage:hover .vp-phone-tools { opacity: 1; }
 .vp-phone-tools .icon-btn.active { color: var(--accent); }
+/* While the phone is controlled from this window: the toolbar stays, and the picture takes the clicks. */
+.vp-stage:has(.pc-overlay) .vp-phone-tools { opacity: 1; box-shadow: 0 0 0 2px #e5484d; }
+.pc-overlay { position: absolute; inset: 0; z-index: 3; cursor: crosshair; outline: none; touch-action: none; }
+.pc-bar {
+  position: absolute; left: 50%; bottom: 10px; z-index: 4; display: flex; gap: 2px; padding: 3px; border-radius: 999px; transform: translateX(-50%);
+  background: rgba(20, 20, 24, 0.72); color: rgba(255, 255, 255, 0.92); max-width: calc(100% - 16px); overflow-x: auto;
+}
 .vp-sections { position: absolute; inset: 0; overflow-y: auto; }
 .vp.view-player .vp-sections { display: none; }
 

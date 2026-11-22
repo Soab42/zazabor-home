@@ -443,6 +443,21 @@ impl Hub {
                 self.host.call_state(&call);
                 self.emit("phone-call-state", call);
             }
+            // The phone asks to see and control this PC (it waits on the user's answer, so off this thread).
+            "remote.start" | "remote.stop" => {
+                if let Some(l) = self.link(id) {
+                    crate::remote::on_message(l, msg);
+                }
+            }
+            // The phone says control of its screen began or ended.
+            "control.state" => {
+                let mut state = msg.clone();
+                if let Some(o) = state.as_object_mut() {
+                    o.remove("t");
+                    o.insert("phoneId".into(), id.into());
+                }
+                self.emit("phone-control-state", state);
+            }
             "file.offer" => self.transfers.offered(self, link, &msg),
             "file.end" => self.transfers.ended(self, id, &msg),
             "xfer.cancel" => self.transfers.cancelled(self, id, &msg),

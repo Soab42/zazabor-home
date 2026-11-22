@@ -23,6 +23,7 @@ mod music;
 mod notes;
 mod office;
 mod phonelink;
+mod remote;
 mod photo;
 mod programs;
 mod protocol;
@@ -298,8 +299,9 @@ async fn open_window(
     siblings: Option<Vec<String>>,
     shape: Option<String>,
     title: Option<String>,
+    phone_id: Option<String>,
 ) -> Result<(), String> {
-    new_window_shaped(&app, &module, path, siblings, shape.as_deref(), title)
+    new_window_shaped(&app, &module, path, siblings, shape.as_deref(), title, phone_id)
 }
 
 /// See `open_window`.
@@ -309,7 +311,7 @@ pub(crate) fn new_window(
     path: Option<String>,
     siblings: Option<Vec<String>>,
 ) -> Result<(), String> {
-    new_window_shaped(app, module, path, siblings, None, None)
+    new_window_shaped(app, module, path, siblings, None, None, None)
 }
 
 /// The size of a phone-screen window (`shape` "phone"): portrait, as tall as the monitor allows
@@ -335,10 +337,11 @@ pub(crate) fn new_window_shaped(
     siblings: Option<Vec<String>>,
     shape: Option<&str>,
     title: Option<String>,
+    phone_id: Option<String>,
 ) -> Result<(), String> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
     let label = format!("window-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-    let start = serde_json::json!({ "module": module, "path": path, "siblings": siblings, "shape": shape });
+    let start = serde_json::json!({ "module": module, "path": path, "siblings": siblings, "shape": shape, "phoneId": phone_id });
     let phone = shape == Some("phone");
     let ((width, height), (min_width, min_height)) = if phone {
         (phone_window_size(app), (240.0, 420.0))
@@ -433,6 +436,7 @@ pub fn run() {
             messages::init(app.handle().clone(), app.path().app_data_dir()?);
             tv::init(app.handle().clone(), app.path().app_data_dir()?, app.path().app_cache_dir()?);
             phonelink::hfp::init(app.handle().clone());
+            remote::init(app.handle().clone(), app.path().app_data_dir()?);
             // The alerts window (calls and messages in the corner of the screen) exists whenever
             // Zazabor runs, the background mode included.
             alerts::init(app.handle().clone(), app.path().app_data_dir()?);
@@ -460,7 +464,7 @@ pub fn run() {
                 // the background mode, Zazabor exits as it did before that window existed.
                 let label = window.label();
                 let app = window.app_handle();
-                if label != alerts::LABEL && !background::keep_running() && !app.webview_windows().keys().any(|l| l != label && l != alerts::LABEL) {
+                if label != alerts::LABEL && !remote::ui::is_ui(label) && !background::keep_running() && !app.webview_windows().keys().any(|l| l != label && l != alerts::LABEL && !remote::ui::is_ui(l)) {
                     app.exit(0);
                 }
             }
@@ -850,6 +854,15 @@ pub fn run() {
             phonelink::phone_mirror,
             phonelink::phone_clip_share,
             phonelink::phone_link_call,
+            remote::remote_settings,
+            remote::remote_set_settings,
+            remote::remote_answer,
+            remote::remote_stop,
+            remote::remote_ui_state,
+            remote::remote_active,
+            remote::phone_control_start,
+            remote::phone_control,
+            remote::phone_control_stop,
             phonelink::phone_sms_read,
             phonelink::phone_set_pc_name,
             phonelink::hfp::phone_bt_state,

@@ -4,7 +4,7 @@ import { open as openDialog } from "../../shared/dialog";
 import type { Category } from "../../shell/settings";
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
-import { agoText, errorText, phoneApi, type BtState, type PhoneState } from "./api";
+import { agoText, errorText, phoneApi, type BtState, type PhoneState, type RemoteSettings } from "./api";
 
 /**
  * Settings → Phone: the link on or off, where files from the phone go, desktop notifications,
@@ -104,10 +104,54 @@ export function phoneCategory(host: { readonly config: Config; configChanged(): 
     btStatus.textContent = !bt.enabled ? "" : !bt.available ? "Bluetooth is off." : on ? `Connected: ${on.name}.` : bt.devices.some((d) => d.paired) ? "No phone is connected for calls." : "No phone is paired over Bluetooth.";
   }
 
+  // ---- remote control: phones seeing and controlling this PC
+  let remote: RemoteSettings = { enabled: false, always: [], viewOnly: false, encoder: "x264" };
+  const saveRemote = (patch: Partial<RemoteSettings>, undo: () => void) => {
+    const next = { ...remote, ...patch };
+    void phoneApi.remoteSetSettings(next).then((saved) => {
+      remote = saved;
+      drawRemote();
+    }, (err) => {
+      undo();
+      fail(err);
+    });
+  };
+  const remoteOn = toggle("Let paired phones see and control this PC", "A paired phone can ask to show this screen and use its mouse and keyboard. Every session asks here first (unless you chose “Always allow” for that phone), shows a red “Controlled from…” pill on every monitor, and Ctrl+Alt+Esc ends it.", (on, input) => saveRemote({ enabled: on }, () => (input.checked = !on)));
+  const remoteView = toggle("View only", "Phones can watch the screen but not move the mouse or type.", (on, input) => saveRemote({ viewOnly: on }, () => (input.checked = !on)));
+  const encoder = h("select", { "aria-label": "Video encoder" },
+    h("option", { value: "x264" }, "Processor (x264, steady bitrate)"),
+    h("option", { value: "vaapi" }, "Graphics chip (VA-API, constant quality)"));
+  encoder.addEventListener("change", () => {
+    const before = remote.encoder;
+    saveRemote({ encoder: encoder.value as RemoteSettings["encoder"] }, () => (encoder.value = before));
+  });
+  const encoderRow: SettingsRow = { label: "Screen encoder", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Screen encoder"), h("p", { class: "sf-hint" }, "How the screen is compressed for the phone. The graphics chip uses less of the processor but can't hold a bitrate.")), encoder) };
+  const alwaysBox = h("div", { class: "pl-settings-phones" });
+  const alwaysRow: SettingsRow = { label: "Always allowed", el: alwaysBox };
+  function drawRemote() {
+    remoteOn.input.checked = remote.enabled;
+    remoteView.input.checked = remote.viewOnly;
+    encoder.value = remote.encoder;
+    const names = new Map((state?.phones ?? []).map((p) => [p.phoneId, p.name]));
+    if (!remote.always.length) {
+      alwaysBox.replaceChildren(h("p", { class: "sf-hint pl-settings-none" }, "No phone is always allowed: each session asks first."));
+      return;
+    }
+    alwaysBox.replaceChildren(...remote.always.map((id) => {
+      const revoke = h("button", { class: "btn small ghost", type: "button" }, "Ask every time");
+      revoke.addEventListener("click", () => saveRemote({ always: remote.always.filter((p) => p !== id) }, () => undefined));
+      return h("div", { class: "sf-row plain pl-settings-phone" },
+        h("span", { class: "pl-card-device small" }, icon("phone", 16)),
+        h("div", { class: "st-text" }, h("span", { class: "sf-label" }, names.get(id) ?? "A phone that is no longer paired"), h("p", { class: "sf-hint" }, "Can start a session without asking.")),
+        revoke);
+    }));
+  }
+
   // ---- paired phones
   const phonesBox = h("div", { class: "pl-settings-phones" });
   const phonesRow: SettingsRow = { label: "Paired phones", el: phonesBox };
   function drawPhones() {
+    drawRemote();
     if (state) {
       pcName.textContent = state.pcName || "—";
       link.input.checked = state.enabled;
@@ -144,6 +188,7 @@ export function phoneCategory(host: { readonly config: Config; configChanged(): 
       { title: "Phone Link", rows: [link.row, pcRow, folderRow] },
       { title: "Notifications", rows: [notify.row, mirrorNotifs.row, clip.row] },
       { title: "Calls", rows: [calls.row, btRow] },
+      { title: "Remote control", rows: [remoteOn.row, remoteView.row, encoderRow, alwaysRow] },
       { title: "Paired phones", rows: [phonesRow] },
     ],
     refresh() {
@@ -156,6 +201,7 @@ export function phoneCategory(host: { readonly config: Config; configChanged(): 
       drawFolder();
       void phoneApi.state().then((next) => (state = next), () => (state = null)).then(drawPhones);
       void phoneApi.btState().then(drawBt, () => drawBt(null));
+      void phoneApi.remoteSettings().then((next) => (remote = next), () => undefined).then(drawRemote);
     },
   };
 }

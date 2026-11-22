@@ -113,7 +113,7 @@ Phone → PC, unprompted:
 
 | t | fields |
 | --- | --- |
-| `hello` | `name, model, android (sdk int), app (versionName), caps: ["sms","calls","contacts","notifications","files","photos","clipboard","mirror"]` (the ones whose permission is granted) |
+| `hello` | `name, model, android (sdk int), app (versionName), caps: ["sms","calls","contacts","notifications","files","photos","clipboard","mirror","remote","control"]` (the ones whose permission is granted; `remote` always, `control` when the accessibility service is on) |
 | `status` | `battery (0-100), charging, signal (0-4 or null), network ("LTE"…, or null), carrier, wifi (ssid or null)`. Sent on change, at most every 5 s |
 | `sms.new` | `msg: Msg` (a received or sent SMS appeared) |
 | `notif.posted` | `n: Notif` |
@@ -121,6 +121,14 @@ Phone → PC, unprompted:
 | `call.state` | `state: "ringing"|"dialing"|"active"|"held"|"ended", number, name, at` (from the phone's TelephonyCallback; the PC uses it for names and when Bluetooth isn't set up) |
 | `file.offer` | `xfer, name, size, mime` (the phone's share sheet → "Zazabor Link", or the app's Send button). The PC answers `{"t":"file.accept","xfer"}` or `{"t":"file.reject","xfer"}` and then reads `2`-frames for that `xfer`, ending with `{"t":"file.end","xfer","sha256":"<hex>"}` |
 | `clip` | `text` (only when the user turned on clipboard sharing on both sides) |
+| `control.state` | `on, reason` (the phone's screen is no longer controlled by the PC: its Stop button, the link dropped, the accessibility service was turned off) |
+
+Phone → PC requests (`rid`; the PC answers with `{"t":"re","rid","ok":true,…}` or `"ok":false,"error"`), added with Remote (docs/plans/remote.md):
+
+| t | fields | → answer |
+| --- | --- | --- |
+| `remote.start` | `maxW, maxH` (the largest picture the phone wants), `fps, kbps, video (bool, false for Touchpad/Keyboard/Media), monitor (index or absent), viewOnly` | `port, token (base64, 16 bytes, single use), monitors:[{name,x,y,w,h,primary}], monitor, w, h, fps, viewOnly, video, encoder`. The PC asked its user first (unless this phone is always allowed) and has opened a one-shot TCP port; the phone dials it (section 1b). An error means remote control is off on the PC, it was declined, or another session runs |
+| `remote.stop` | — | `{}` (ends the PC's session for this phone) |
 
 PC → phone requests (`rid`, answer fields after `→`):
 
@@ -146,6 +154,11 @@ PC → phone requests (`rid`, answer fields after `→`):
 | `ring` | — | `{}` (plays the alarm sound at full volume until the phone is touched, or for 30 s) |
 | `mirror.start` | — | `{}` once the phone asked the user for screen capture. Mirroring then runs through ZMIR to the Cast receiver |
 | `clip` | `text` | (no answer) |
+| `control.start` | `name` (the PC's name) | `{}` once the phone's user allowed it (a notification: Allow once / Always allow / Deny) and the accessibility service is on; the phone then shows a red border and a notification with Stop. Error: the service is off, it was declined, or a session already runs |
+| `ctl` | `k` and its fields (below) | (no answer; ignored unless a `control.start` was accepted) |
+| `control.stop` | — | (no answer; control ends and the phone sends `control.state`) |
+
+`ctl` actions (`k`), positions are fractions 0..1 of the phone's screen so the PC's window can be any size: `tap {x,y}`, `long {x,y}`, `swipe {p:[[x,y],…] (2..256 points), ms (50..5000)}`, `scroll {x,y,dx,dy}` (fraction of the screen; positive = further down/right), `global {a: back|home|recents|notifications|quick|lock|screenshot|power}`, `text {s}` (into the focused field, at the cursor), `key {key: enter|del|left|right|up|down}`, `volume {d: up|down|mute}`. The phone's capability list gains `remote` (always) and `control` (when the accessibility service is on).
 
 Types (JSON, times in Unix ms):
 
@@ -164,6 +177,38 @@ Transfer ids are chosen by whichever side starts the transfer: the PC uses even 
 phone uses odd. Files from the phone go to the user's Downloads folder, under
 `~/Downloads/Zazabor Link/` (setting `phone.downloadDir`). Files from the PC go to the phone's
 `Download/Zazabor/`, or to the folder open in the file browser when dropped there.
+
+## 1b. The remote channel (`ZREM/1`)
+
+For Remote (docs/plans/remote.md), after `remote.start`. The PC opens a one-shot TCP port on `0.0.0.0`
+and takes one connection that proves itself; a connection that fails any check is closed and the
+wait goes on (30 s), so a stray connection can't use up the one chance.
+
+```
+phone → PC   ZREM/1\n
+phone → PC   {"phoneId":"<32 hex>","token":"<b64 of the 16 token bytes>","nonce":"<b64 16 bytes>"}\n
+PC → phone   {"ok":true,"nonce":"<b64 16 bytes>"}\n        (or {"ok":false}\n and close)
+```
+
+Keys: `HKDF-SHA256(ikm = linkKey, salt = phoneNonce ‖ pcNonce, info = "zrem session", 64 bytes)`, the
+first 32 for phone → PC and the last 32 for PC → phone (the ZLNK scheme with another `info`, so a
+remote session never shares a key with the link). Frames are `u32 length ‖ ChaCha20-Poly1305(kind ‖
+body)` with a counter nonce per direction starting at 0, at most 4 MiB. The phone's first frame is
+`{"t":"ready"}`, which proves it holds the key. Plaintext kinds:
+
+| kind | direction | body |
+| --- | --- | --- |
+| `01` | both | JSON (`t`): PC → phone `info {w,h,monitor,monitors,fps,viewOnly,video,encoder}` (again after a monitor change), `pong {ts}`, `error {error}`, `end`; phone → PC `ping {ts}` (every 4 s, the PC hangs up after 20 s of silence), `keyframe`, `video {on}`, `monitor {i}`, `bitrate {kbps}`, `stop` |
+| `10` | PC → phone | video: `flags (1: keyframe) ‖ pts µs since the epoch (u64 BE) ‖ H.264 Annex-B access unit` (SPS/PPS before every keyframe; no B-frames) |
+| `20` | phone → PC | one input event: `event ‖ fields`, big-endian |
+
+Input events: `01 x u16, y u16` pointer to a position (0..65535 across the captured monitor), `02 dx i16,
+dy i16` pointer by a distance, `03 button u8 (1 left, 2 middle, 3 right), down u8`, `04 dx i16, dy i16`
+wheel in eighths of a notch (positive = down/right), `05 keysym u32, down u8` (X11 keysyms),
+`06 len u16 ‖ UTF-8` type text (at most 4096 bytes, any Unicode), `07 media u8` (1 play/pause, 2 next,
+3 previous, 4 volume up, 5 volume down, 6 mute, 7 stop, 8 seek back 10 s, 9 seek forward 10 s).
+Both implementations pin the same bytes in their tests (`src-tauri/src/remote/tests.rs`,
+`RemoteProtoTest.kt`).
 
 ## 2. Bluetooth calls (HFP 1.7 hands-free, Zazabor is the HF)
 
@@ -275,6 +320,7 @@ Events emitted to every window (the main window shows the call bar and incoming-
 - `phone-transfer` → `Transfer` (at most every 250 ms per transfer, and always when it ends)
 - `phone-bt` → `BtState` (any call or connection change)
 - `phone-ring` → `LiveCall` (an incoming call; the page shows the incoming-call card with Answer and Decline)
+- `phone-control-state` → `{phoneId, on, reason?}` (the PC no longer controls the phone's screen; the mirror window drops its toolbar). `remote-ui-state` → `{mode, phone, viewOnly}` and `remote-ended` → `{phoneId}` belong to Remote (docs/plans/remote.md): the commands are `remote_settings`, `remote_set_settings`, `remote_answer`, `remote_stop`, `remote_ui_state`, `remote_active`, and for controlling the phone `phone_control_start`, `phone_control` and `phone_control_stop`.
 
 Desktop notifications go through `desktop_notify.rs`, for new texts and mirrored phone
 notifications, when the window isn't focused on that conversation. The config keys `phone.notify`

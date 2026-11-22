@@ -1,5 +1,6 @@
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { closeThisWindow, windowStart } from "../../shell/windows";
+import { mountPhoneControl, type PhoneControl } from "../phone/control";
 import { open } from "../../shared/dialog";
 import type { AppModule, OpenRequest, ShellContext } from "../../shell/module";
 import { basename, dirname, h, isTypingTarget, stripExtension } from "../../ui/dom";
@@ -78,6 +79,8 @@ export class VideoModule implements AppModule {
   private aloneSidebar = false;
   /** A phone's screen in its own window (see `showPhoneScreen`). */
   private phoneScreen = false;
+  /** Control of the phone from this window (the phone's user said yes). */
+  private phoneControl: PhoneControl | null = null;
   private readonly aloneCard = h("div", { class: "vp-alone-card", hidden: true });
   private readonly sidebarToggle = h("button", { class: "icon-btn", type: "button", title: "Sidebar", "aria-label": "Sidebar" }, icon("sidebar", 18));
   private readonly stage = h("div", { class: "vp-stage" });
@@ -771,7 +774,14 @@ export class VideoModule implements AppModule {
     });
     const close = h("button", { class: "icon-btn", type: "button", title: "Stop mirroring", "aria-label": "Stop mirroring" }, icon("close", 16));
     close.addEventListener("click", () => closeThisWindow());
-    this.stage.append(h("div", { class: "vp-phone-tools" }, pin, close));
+    const tools = h("div", { class: "vp-phone-tools" }, pin, close);
+    this.stage.append(tools);
+    // A phone with Zazabor Link's accessibility service on can be controlled from here.
+    const phoneId = windowStart && "phoneId" in windowStart ? windowStart.phoneId : null;
+    if (phoneId) {
+      this.phoneControl = mountPhoneControl(this.stage, tools, phoneId, () => ({ width: this.player.state.videoWidth, height: this.player.state.videoHeight }), (text) => this.flash(text));
+      tools.classList.add("has-control");
+    }
     // The window follows the picture's shape: once a resize settles, the height is set from the
     // width (the picture is never stretched; the window is the picture).
     let settle = 0;
@@ -812,6 +822,7 @@ export class VideoModule implements AppModule {
   }
 
   dispose() {
+    this.phoneControl?.dispose();
     clearTimeout(this.idleTimer);
     clearTimeout(this.osdTimer);
     clearTimeout(this.clickTimer);
