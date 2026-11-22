@@ -39,6 +39,16 @@ refresh_menus() {
   gtk-update-icon-cache -q -t "$data_dir/icons/hicolor" 2>/dev/null || true
 }
 
+# Each section's own app-menu entry (zazabor-files.desktop…) and icon, which Zazabor Home writes itself
+# (Settings → General → "Show sections as separate apps"); only files it marked as its own are removed.
+remove_section_apps() {
+  local f
+  for f in "$data_dir"/applications/zazabor-*.desktop; do
+    [[ -f "$f" ]] && grep -q '^X-Zazabor-Section=' "$f" || continue
+    rm -f "$f" "$data_dir/icons/hicolor/scalable/apps/$(basename "$f" .desktop).svg"
+  done
+}
+
 # CorePro was Zazabor's name until 2026-10-27. A running CorePro is asked to quit first (it asks
 # about unsaved Office files), so the two never run side by side; its program, launcher, icons
 # and libraries go. Its settings and data stay as a backup (Zazabor copies them on first start),
@@ -68,6 +78,7 @@ remove_sliderpro() {
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   remove_corepro
+  remove_section_apps
   rm -f "$bin_dir/zazabor" "$desktop_file" "$autostart_file" "$old_autostart"
   rm -rf "$lib_dir" "$pdfium_dir"
   for size in "${icon_sizes[@]}"; do rm -f "$data_dir/icons/hicolor/${size}x${size}/apps/zazabor.png"; done

@@ -38,6 +38,10 @@ export interface SettingsHost {
   /** Saves the config and tells the modules to re-read it. */
   configChanged(): void;
   setFeature(id: ModuleId, on: boolean): void;
+  /** Widens or folds the sidebar. */
+  setRailExpanded(on: boolean): void;
+  /** "Show sections as separate apps" changed: the app menu entries follow. */
+  sectionAppsChanged(): void;
   lockMode(): LockMode;
   openLockSettings(): void;
   lockNow(): void;
@@ -343,7 +347,7 @@ export class Settings {
   private buildCategories(): Category[] {
     const { config } = this.host;
     return [
-      { id: "general", title: "General", icon: "settings", section: "App", groups: [...this.appearance.general(), defaultAppsGroup(), this.helpGroup()] },
+      { id: "general", title: "General", icon: "settings", section: "App", ...this.generalParts() },
       { id: "appearance", title: "Appearance", icon: "palette", section: "App", groups: this.appearance.appearance() },
       this.featuresCategory(),
       this.privacyCategory(),
@@ -387,6 +391,24 @@ export class Settings {
       ...videoCategories(this.host),
       this.aboutCategory(),
     ];
+  }
+
+  /** General's groups, with the sidebar and section-app switches (kept in step with Ctrl+Alt+B and the rail). */
+  private generalParts(): Pick<Category, "groups" | "refresh"> {
+    const { config } = this.host;
+    const wide = toggleRow("Wide sidebar", "Show each section's name beside its icon (Ctrl+Alt+B). Drag sections, or right-click them, to reorder.", () => config.rail.expanded, (on) => this.host.setRailExpanded(on));
+    const apps = toggleRow("Show sections as separate apps in the app menu", "Files, Gallery, Video and the others each get an entry of their own in your desktop's app search, opening that section in its own window.", () => config.sectionApps, (on) => {
+      config.sectionApps = on;
+      this.host.configChanged();
+      this.host.sectionAppsChanged();
+    });
+    return {
+      groups: [...this.appearance.general(), { title: "Sidebar", rows: [wide.row, apps.row] }, defaultAppsGroup(), this.helpGroup()],
+      refresh: () => {
+        wide.input.checked = config.rail.expanded;
+        apps.input.checked = config.sectionApps;
+      },
+    };
   }
 
   private featuresCategory(): Category {

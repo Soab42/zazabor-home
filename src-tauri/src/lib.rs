@@ -30,6 +30,7 @@ mod protocol;
 mod motion;
 mod recorder;
 mod scan;
+mod sections;
 mod signing;
 mod statements;
 mod term;
@@ -217,9 +218,10 @@ static PENDING_PATH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(No
 
 /// The file or folder on this launch's command line, as an absolute path.
 fn launch_arg() -> Option<String> {
+    let section = sections::requested();
     std::env::args()
         .skip(1)
-        .filter(|a| !a.starts_with('-'))
+        .filter(|a| !a.starts_with('-') && section.as_deref() != Some(a.as_str()))
         .map(PathBuf::from)
         .find(|p| p.exists())
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)))
@@ -388,7 +390,12 @@ pub fn run() {
         notes::quick::forward_quit();
         return;
     }
-    if notes::quick::requested() {
+    if let Some(section) = sections::requested() {
+        // `--open <section>` (the section apps in the app menu): a window on it, here or in the running one.
+        if notes::quick::forward_open(&section) {
+            return;
+        }
+    } else if notes::quick::requested() {
         if notes::quick::forward() {
             return;
         }
@@ -445,6 +452,8 @@ pub fn run() {
                 clipboard::popup::show(app.handle())?;
             } else if notes::quick::record_requested() {
                 recorder::show_window(app.handle())?;
+            } else if let Some(section) = sections::requested() {
+                new_window(app.handle(), &section, None, None)?;
             } else if notes::quick::requested() {
                 notes::quick::new_note(app.handle());
             } else if !background::requested() {
@@ -507,6 +516,7 @@ pub fn run() {
             programs::programs_dry_run,
             feedback::system_details,
             defaults::defaults_set,
+            sections::sections_sync,
             content::content_catalog,
             content::content_fetch,
             content::content_read,

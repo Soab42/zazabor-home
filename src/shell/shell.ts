@@ -9,7 +9,11 @@ import { askForAccess, dismissUnlockPrompt, lockApi, openLockSettings, type Lock
 import { h, isTypingTarget } from "../ui/dom";
 import { MODULE_IDS, type AppModule, type ModuleId, type OpenRequest, type ShellContext, type ShellLock } from "./module";
 import { Onboarding } from "./onboarding";
+import "../modules/files/ops/ops.css";
+import { showToast } from "../modules/files/ops/toast";
+import { moveTo, orderEnabled } from "./order";
 import { Rail } from "./rail";
+import { syncSectionApps } from "./sections";
 import { MODULES } from "./registry";
 import { kindOf } from "../modules/office/api";
 import { studioProjectKind } from "../modules/studio/app";
@@ -38,6 +42,10 @@ export class Shell implements ShellContext {
     help: () => this.toggleGuide(),
     drawer: () => this.drawer.toggle(),
     openWindow: (id) => this.openModuleWindow(id),
+    reorder: (id, to) => this.moveSection(id, to),
+    resetOrder: () => this.resetOrder(),
+    hide: (id) => this.hideSection(id),
+    toggleExpanded: () => this.setRailExpanded(!this.config.rail.expanded),
   });
   /** Terminals under every section (Ctrl+`). */
   private drawer: TerminalDrawer;
@@ -70,6 +78,8 @@ export class Shell implements ShellContext {
       appearanceChanged: () => this.appearanceChanged(),
       configChanged: () => this.configChanged(),
       setFeature: (id, on) => this.setFeature(id, on),
+      setRailExpanded: (on) => this.setRailExpanded(on),
+      sectionAppsChanged: () => this.syncSectionApps(),
       lockMode: () => this.lockStatus.mode,
       openLockSettings: () => void this.openLockSettings(),
       lockNow: () => void this.lockApp(),
@@ -98,9 +108,12 @@ export class Shell implements ShellContext {
     window.addEventListener("focus", rest);
     window.addEventListener("blur", rest);
     rest();
+    this.rail.setExpanded(config.rail.expanded);
     this.rail.setItems(this.enabledModules());
     this.watchStatuses();
     this.applyAppearance();
+    // The app menu's section entries follow the features (the main window keeps them; the others needn't).
+    if (isMainWindow) this.syncSectionApps();
 
     // "System" follows the desktop's light or dark setting as it changes.
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -297,8 +310,48 @@ export class Shell implements ShellContext {
 
   // ---- modules
 
+  /** The sections that are on, in the rail's order (the user's, else the built-in one). */
   private enabledModules() {
-    return MODULE_IDS.filter((id) => this.config.features[id]);
+    return orderEnabled(MODULE_IDS.filter((id) => this.config.features[id]), this.config.rail.order, MODULE_IDS);
+  }
+
+  private syncSectionApps() {
+    syncSectionApps(this.config);
+  }
+
+  /** Widens the rail to show names, or folds it back to icons. */
+  setRailExpanded(on: boolean) {
+    this.config.rail.expanded = on;
+    this.rail.setExpanded(on);
+    if (this.settings.isOpen) this.settings.refresh();
+    this.saveConfig();
+  }
+
+  /** Puts a section at a place among the visible ones and remembers the order. */
+  private moveSection(id: ModuleId, to: number) {
+    const visible = this.enabledModules();
+    this.config.rail.order = moveTo(visible, id, to, this.config.rail.order, MODULE_IDS) as ModuleId[];
+    this.rail.setItems(this.enabledModules());
+    this.revealActive();
+    this.saveConfig();
+  }
+
+  private resetOrder() {
+    this.config.rail.order = [];
+    this.rail.setItems(this.enabledModules());
+    this.revealActive();
+    this.saveConfig();
+  }
+
+  /** Right-click → Hide from Sidebar: the feature goes off, with a way back. */
+  private hideSection(id: ModuleId) {
+    if (this.enabledModules().length <= 1) return;
+    this.setFeature(id, false);
+    if (this.settings.isOpen) this.settings.refresh();
+    showToast(`${MODULES[id].title} hidden from the sidebar`, { label: "Undo", run: () => {
+      this.setFeature(id, true);
+      if (this.settings.isOpen) this.settings.refresh();
+    } });
   }
 
   /** Builds a module on first use; null when it was turned off while loading. */
@@ -373,6 +426,7 @@ export class Shell implements ShellContext {
     this.watchStatuses();
     this.revealActive();
     this.saveConfig();
+    this.syncSectionApps();
   }
 
   /** Keeps the rail dots of the enabled modules that have one (main window only: it has the rail). */
@@ -516,6 +570,12 @@ export class Shell implements ShellContext {
         return;
       }
       if (active && (active.modal || !isTypingTarget(e.target)) && active.handleKey(e)) e.preventDefault();
+      return;
+    }
+    // Ctrl+B is taken (Mail's folders, Sheets' bold, the video editor's razor), so the sidebar's fold is Ctrl+Alt+B.
+    if (mod && e.altKey && !e.shiftKey && e.code === "KeyB" && !active?.modal) {
+      e.preventDefault();
+      this.setRailExpanded(!this.config.rail.expanded);
       return;
     }
     if (mod && e.key === "," && !active?.modal) {

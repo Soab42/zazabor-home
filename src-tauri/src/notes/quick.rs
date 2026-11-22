@@ -25,6 +25,8 @@ const QUIT_REQUEST: &str = "quit";
 /// `zazabor --record`: the screen recorder, or stop the recording that's running.
 pub const RECORD_FLAG: &str = "--record";
 const RECORD_REQUEST: &str = "record";
+/// `zazabor --open <section>`: a new window on that section (see `sections`).
+const OPEN_REQUEST: &str = "open";
 
 /// GNOME's custom keyboard shortcuts.
 const KEYS_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
@@ -98,6 +100,12 @@ pub fn forward_show(path: Option<&str>) -> bool {
     BufReader::new(stream).read_line(&mut reply).is_ok() && reply.trim() == "ok"
 }
 
+/// Asks a running Zazabor to open a window on a section (`zazabor --open wallet`); false when none answers.
+pub fn forward_open(section: &str) -> bool {
+    let Ok(mut stream) = UnixStream::connect(socket_path()) else { return false };
+    stream.write_all(format!("{OPEN_REQUEST}\t{section}\n").as_bytes()).is_ok()
+}
+
 /// Hands the request to a running Zazabor; false when none answers.
 pub fn forward() -> bool {
     let Ok(mut stream) = UnixStream::connect(socket_path()) else { return false };
@@ -136,6 +144,14 @@ pub fn serve(app: tauri::AppHandle) {
                     let _ = stream.write_all(b"ok\n");
                 }
                 REQUEST => new_note(&app),
+                OPEN_REQUEST => {
+                    if let Some(id) = arg.filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')) {
+                        crate::background::cancel_quit();
+                        if let Err(err) = crate::new_window(&app, &id, None, None) {
+                            eprintln!("Could not open a window on {id}: {err}");
+                        }
+                    }
+                }
                 QUIT_REQUEST => crate::background::quit(&app),
                 RECORD_REQUEST => crate::recorder::toggle(&app),
                 CLIPBOARD_REQUEST => {

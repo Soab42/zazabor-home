@@ -3,6 +3,7 @@ import { normalizeAppearance, type Appearance } from "./appearance";
 import { normalizeSettings, type SlideshowSettings } from "./modules/gallery/slideshow/settings";
 import type { SortMode } from "./modules/gallery/library/model";
 import { MODULE_IDS, type ModuleId } from "./shell/module";
+import { normalizeOrder } from "./shell/order";
 import { tellOthers } from "./shell/windows";
 
 export type FilesView = "icon" | "list" | "column" | "gallery";
@@ -80,6 +81,10 @@ export interface Config {
   appearance: Appearance;
   /** Which features are on (Settings → Features). At least one stays on. */
   features: Record<ModuleId, boolean>;
+  /** The sidebar (rail): wide with names, and the order of its sections (src/shell/order.ts). */
+  rail: RailSettings;
+  /** Each enabled section is also an app of its own in the desktop's app menu (zazabor-<section>.desktop). */
+  sectionApps: boolean;
   /** The module shown last, reopened at launch. */
   module: ModuleId;
   /** The first-run wizard has been completed. */
@@ -98,6 +103,18 @@ export interface Config {
   studio: StudioSettings;
   guide: GuideSettings;
   updates: UpdateSettings;
+}
+
+/** The sidebar of sections. */
+export interface RailSettings {
+  /** Shows each section's name beside its icon (otherwise icons only). */
+  expanded: boolean;
+  /** Section ids in the order the user chose; sections not listed (new ones) come last. */
+  order: ModuleId[];
+}
+
+function normalizeRail(raw: Partial<RailSettings> | undefined): RailSettings {
+  return { expanded: raw?.expanded === true, order: normalizeOrder(raw?.order, MODULE_IDS) as ModuleId[] };
 }
 
 /** Updates (src/shell/updates.ts). */
@@ -433,6 +450,8 @@ const DEFAULTS: Config = {
   slideshow: normalizeSettings(undefined),
   appearance: normalizeAppearance(undefined),
   features: normalizeFeatures(undefined),
+  rail: normalizeRail(undefined),
+  sectionApps: true,
   module: "files",
   onboarded: false,
   files: DEFAULT_FILES,
@@ -476,6 +495,8 @@ export function parseConfig(raw: string): Config {
     slideshow: normalizeSettings(parsed.slideshow),
     appearance: normalizeAppearance(parsed.appearance),
     features: normalizeFeatures(parsed.features),
+    rail: normalizeRail(parsed.rail),
+    sectionApps: parsed.sectionApps !== false,
     module: MODULE_IDS.includes(parsed.module as ModuleId) ? (parsed.module as ModuleId) : "files",
     onboarded: parsed.onboarded === true,
     files: normalizeFiles(parsed.files),

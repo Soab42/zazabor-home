@@ -332,6 +332,11 @@ const paths = {
 
 export type IconName = keyof typeof paths;
 
+/** An icon's inner SVG markup (24x24, stroke icons), for files that aren't made by the DOM. */
+export function iconMarkup(name: IconName): string {
+  return paths[name];
+}
+
 export function icon(name: IconName, size = 18): SVGSVGElement {
   const template = document.createElement("template");
   template.innerHTML = `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
