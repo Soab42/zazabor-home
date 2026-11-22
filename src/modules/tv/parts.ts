@@ -322,10 +322,15 @@ export function shelf(title: string, items: Item[], ctx: TvCtx, options: ShelfOp
   // drag with the mouse
   let startX = 0, startLeft = 0, moved = false;
   const drag = (e: PointerEvent) => {
-    if (Math.abs(e.clientX - startX) > 6) moved = true;
+    if (Math.abs(e.clientX - startX) > 6 && !moved) {
+      moved = true;
+      // snapping and hover lifts fight the finger: off while dragging
+      row.classList.add("dragging");
+    }
     if (moved) row.scrollLeft = startLeft - (e.clientX - startX);
   };
   const drop = () => {
+    row.classList.remove("dragging");
     window.removeEventListener("pointermove", drag);
     window.removeEventListener("pointerup", drop);
   };

@@ -464,3 +464,8 @@
 .tv-sheet-title { margin: 0 6px 8px; font-size: 17px; font-weight: 720; letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tv-sheet .tv-menu-item { padding: 14px 10px; font-size: 16px; }
 @media (prefers-reduced-motion: reduce) { .tv-nav-dl svg { animation: none; } .tv-menu, .tv-sheet { transition: none; } }
+
+/* dragging a row with the mouse: no scroll snapping (it fights the pointer) and no hover effects on the cards under it */
+.tv-row.dragging { scroll-snap-type: none; cursor: grabbing; }
+.tv-row.dragging .tv-item { pointer-events: none; }
+.tv-row.dragging .tv-card { transition: none; transform: none; }
