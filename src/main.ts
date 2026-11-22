@@ -18,6 +18,8 @@ loadConfig()
     if (windowStart?.module === "recorder") return (await import("./modules/studio/record/windows")).startRecorderWindow(config);
     // The corner window for call cards and message toasts.
     if (windowStart?.module === "alerts") return (await import("./alerts/window")).startAlertsWindow(config);
+    // The question and the pill of a remote-control session (a phone controlling this PC).
+    if (windowStart?.module === "remote-ui") return (await import("./remote/window")).startRemoteWindow(config);
     if (windowStart?.module === "recorder-pill") return (await import("./modules/studio/record/windows")).startRecorderBar(config);
     if (windowStart?.module === "recorder-area") return (await import("./modules/studio/record/windows")).startAreaPicker(config, windowStart.path);
     return new Shell(config).start();

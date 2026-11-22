@@ -77,7 +77,7 @@ impl hkdf::KeyType for Len {
 }
 
 /// HKDF-SHA256 with the salt `phoneNonce ‖ pcNonce`.
-fn derive(ikm: &[u8], phone_nonce: &[u8], pc_nonce: &[u8], info: &[u8], out: &mut [u8]) {
+pub(crate) fn derive(ikm: &[u8], phone_nonce: &[u8], pc_nonce: &[u8], info: &[u8], out: &mut [u8]) {
     let salt = [phone_nonce, pc_nonce].concat();
     hkdf::Salt::new(hkdf::HKDF_SHA256, &salt)
         .extract(ikm)

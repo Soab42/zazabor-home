@@ -30,7 +30,7 @@ export interface PairRequest {
   code: string;
 }
 
-export type Cap = "sms" | "calls" | "contacts" | "notifications" | "files" | "photos" | "clipboard" | "mirror";
+export type Cap = "sms" | "calls" | "contacts" | "notifications" | "files" | "photos" | "clipboard" | "mirror" | "remote" | "control";
 
 export interface Phone {
   phoneId: string;
@@ -271,6 +271,14 @@ export const phoneApi = {
   mirror: (phoneId: string) => call<void>("phone_mirror", { phoneId }),
   clipShare: (phoneId: string, on: boolean) => call<void>("phone_clip_share", { phoneId, on }),
 
+  // Remote control (docs/plans/remote.md)
+  remoteSettings: () => call<RemoteSettings>("remote_settings"),
+  remoteSetSettings: (settings: RemoteSettings) => call<RemoteSettings>("remote_set_settings", { settings }),
+  /** Asks the phone for control of its screen (its user answers on the phone). */
+  controlStart: (phoneId: string) => call<void>("phone_control_start", { phoneId }),
+  control: (phoneId: string, action: ControlAction) => call<void>("phone_control", { phoneId, action }),
+  controlStop: (phoneId: string) => call<void>("phone_control_stop", { phoneId }),
+
   // Bluetooth calls
   btState: () => call<BtState>("phone_bt_state"),
   btEnable: (on: boolean) => call<BtState>("phone_bt_enable", { on }),
@@ -344,3 +352,22 @@ export function duration(seconds: number): string {
   const ss = String(s % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
+
+/** Settings → Phone → Remote control: phones seeing and controlling this PC. */
+export interface RemoteSettings {
+  enabled: boolean;
+  /** Phones (their ids) that may start a session without asking. */
+  always: string[];
+  viewOnly: boolean;
+  encoder: "x264" | "vaapi";
+}
+
+/** One thing the mirror window asks the phone to do (positions are fractions of its screen). */
+export type ControlAction =
+  | { k: "tap" | "long"; x: number; y: number }
+  | { k: "swipe"; p: [number, number][]; ms: number }
+  | { k: "scroll"; x: number; y: number; dx: number; dy: number }
+  | { k: "global"; a: "back" | "home" | "recents" | "notifications" | "quick" | "lock" | "screenshot" | "power" }
+  | { k: "text"; s: string }
+  | { k: "key"; key: "enter" | "del" | "left" | "right" | "up" | "down" }
+  | { k: "volume"; d: "up" | "down" | "mute" };

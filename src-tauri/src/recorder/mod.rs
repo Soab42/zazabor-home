@@ -12,7 +12,7 @@
 pub mod devices;
 pub mod files;
 pub mod pipeline;
-mod x11;
+pub(crate) mod x11;
 
 use crate::videoedit::{h264::Converter, media};
 use files::PauseClock;

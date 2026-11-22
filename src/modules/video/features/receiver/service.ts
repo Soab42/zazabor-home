@@ -209,7 +209,7 @@ function play(shell: ShellContext, request: PlayRequest) {
   setCasting({ request });
   libraryService()?.remember([{ path: request.url, name: castTitle(request), group: request.sender }]);
   // A phone's screen gets a window of its own (portrait, resizable); anything else plays in Video.
-  if (request.source === "mirror") openPhoneScreenWindow(request.url, castTitle(request));
+  if (request.source === "mirror") openPhoneScreenWindow(request.url, castTitle(request), request.senderKey.startsWith("mirror:") ? request.senderKey.slice(7) : null);
   else shell.open({ kind: "video", path: request.url, siblings: [request.url] });
   // The library service exists once the Video module is built (it may have just been).
   setTimeout(() => libraryService()?.remember([{ path: request.url, name: castTitle(request), group: request.sender }]), 400);

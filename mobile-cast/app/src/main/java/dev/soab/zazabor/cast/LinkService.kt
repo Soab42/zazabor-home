@@ -56,6 +56,8 @@ class LinkService : Service() {
         const val ACTION_REFRESH = "dev.soab.zazabor.cast.link.REFRESH"
         const val ACTION_STOP_RING = "dev.soab.zazabor.cast.link.STOP_RING"
         const val ACTION_RETRY = "dev.soab.zazabor.cast.link.RETRY"
+        const val ACTION_CONTROL_ANSWER = "dev.soab.zazabor.cast.link.CONTROL_ANSWER"
+        const val ACTION_CONTROL_STOP = "dev.soab.zazabor.cast.link.CONTROL_STOP"
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
         const val EXTRA_NAME = "name"
@@ -67,6 +69,8 @@ class LinkService : Service() {
         private const val NOTIFY_PAIR = 12
         const val NOTIFY_MIRROR = 13
         private const val NOTIFY_RING = 14
+        private const val NOTIFY_CONTROL = 15
+        private const val NOTIFY_CONTROL_ASK = 16
         private val BACKOFF_S = intArrayOf(1, 2, 5, 10, 30)
 
         @Volatile
@@ -160,10 +164,34 @@ class LinkService : Service() {
                 if (PhotoLibrary.allowed(context)) add("photos")
                 if (LinkPrefs(context).clip) add("clipboard")
                 add("mirror")
+                // The PC can be seen and controlled from here (always), and can control this phone
+                // once the user turned the accessibility service on.
+                add("remote")
+                if (RemoteInputService.enabled(context)) add("control")
             }
         }
 
         val pcName: String? get() = instance?.linkedSession?.pcName
+
+        /** Where the remote channel dials: the linked PC's address and the key of the link. */
+        class Endpoint(val host: String, val pcName: String, val linkKey: ByteArray)
+
+        fun endpoint(context: Context): Endpoint? {
+            val host = instance?.linkedHost ?: return null
+            val prefs = LinkPrefs(context)
+            val key = prefs.pcId?.let { prefs.key(it) } ?: return null
+            return Endpoint(host, prefs.pcName, key)
+        }
+
+        /** Asks the PC something and waits for its answer (blocks: not on the main thread). */
+        fun request(msg: JSONObject, timeoutMs: Long = 20_000): JSONObject {
+            val service = instance ?: throw IOException("Not linked to a PC")
+            return service.askPc(msg, timeoutMs)
+        }
+
+        fun controlEnded(context: Context) {
+            instance?.cancelNotification(NOTIFY_CONTROL)
+        }
 
         private class MirrorRequest(val token: String, val pc: Pc, val at: Long)
 
@@ -227,6 +255,9 @@ class LinkService : Service() {
     private val cancelled = ConcurrentHashMap.newKeySet<Int>()
     private val offered = ConcurrentHashMap<Int, CompletableFuture<Boolean>>()
     private val nextXfer = AtomicInteger(1)
+    private val asked = ConcurrentHashMap<Int, CompletableFuture<JSONObject>>()
+    private val nextRid = AtomicInteger(1000)
+    @Volatile private var controlChoice: CompletableFuture<String>? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -261,6 +292,8 @@ class LinkService : Service() {
             }
             ACTION_REFRESH -> refreshCaps()
             ACTION_STOP_RING -> Ringer.stop()
+            ACTION_CONTROL_ANSWER -> controlChoice?.complete(intent.getStringExtra(EXTRA_TEXT) ?: "deny")
+            ACTION_CONTROL_STOP -> Control.end(this, "Stopped on the phone", tellPc = true)
         }
         ensureLoop()
         poke()
@@ -499,6 +532,7 @@ class LinkService : Service() {
             linkedSession = null
             session = null
             linkedHost = null
+            Control.end(this, "The link dropped", tellPc = false)
             events.post { stopWatchers() }
             abortTransfers()
             if (running) main.post { discovery?.start() }
@@ -566,7 +600,10 @@ class LinkService : Service() {
             "file.reject" -> offered[msg.optInt("xfer")]?.complete(false)
             "file.end" -> endIncoming(s, msg.optInt("xfer"), msg.optString("sha256"))
             "xfer.cancel" -> cancelTransfer(msg.optInt("xfer"))
-            "re", "hello", "status" -> {}
+            "re" -> asked.remove(msg.optInt("rid"))?.complete(msg)
+            "hello", "status" -> {}
+            "ctl" -> Control.handle(msg)
+            "control.stop" -> Control.end(this, "Stopped on the PC", tellPc = true)
             "clip" -> {
                 setClip(msg.optString("text"))
                 if (msg.has("rid")) answer(s, msg)
@@ -628,6 +665,7 @@ class LinkService : Service() {
                 "call.end" -> PhoneStatus.end(this)
                 "ring" -> ring()
                 "mirror.start" -> startMirror(msg)
+                "control.start" -> controlStart(msg)
                 "clip" -> {}
                 else -> throw IllegalArgumentException("Zazabor Link doesn't know “$t” (update the app)")
             }
@@ -642,6 +680,89 @@ class LinkService : Service() {
             after?.invoke()
         } catch (_: IOException) {
         }
+    }
+
+    // ---- the PC and the phone's screen ----
+
+    private fun askPc(msg: JSONObject, timeoutMs: Long): JSONObject {
+        val s = linkedSession ?: throw IOException("Not linked to a PC")
+        val rid = nextRid.getAndIncrement()
+        val answer = CompletableFuture<JSONObject>()
+        asked[rid] = answer
+        try {
+            s.send(msg.put("rid", rid))
+            val re = try {
+                answer.get(timeoutMs, TimeUnit.MILLISECONDS)
+            } catch (_: java.util.concurrent.TimeoutException) {
+                throw IOException("The PC didn't answer in time")
+            }
+            if (!re.optBoolean("ok")) throw IOException(re.optString("error", "The PC said no"))
+            return re
+        } finally {
+            asked.remove(rid)
+        }
+    }
+
+    /**
+     * `control.start`: the PC asks to drive this phone. Needs the accessibility service, and a yes
+     * from the user (a notification with Allow once / Always allow / Deny), unless this PC was
+     * always allowed. Then the red border and a notification with Stop stay up until it ends.
+     */
+    private fun controlStart(msg: JSONObject) {
+        val name = msg.optString("name", prefs.pcName).ifBlank { prefs.pcName }
+        if (!RemoteInputService.enabled(this) || RemoteInputService.instance == null) {
+            throw NotAllowed("Turn on Zazabor Link in the phone's Settings → Accessibility first")
+        }
+        if (Control.active) throw NotAllowed("This phone is already being controlled")
+        val pcId = prefs.pcId ?: throw NotAllowed("Not paired")
+        var choice = if (prefs.controlAlways(pcId)) "once" else askControl(name)
+        if (choice == "always") prefs.setControlAlways(pcId, true)
+        if (choice == "deny") throw NotAllowed("Control was declined on the phone")
+        choice = "ok"
+        if (!Control.begin(name)) throw NotAllowed("The accessibility service isn't running")
+        main.post { controlNotification(name) }
+        LinkState.notice("$name is controlling this phone")
+    }
+
+    private fun askControl(name: String): String {
+        val answer = CompletableFuture<String>()
+        controlChoice = answer
+        fun action(choice: String, request: Int) = PendingIntent.getService(
+            this, request, Intent(this, LinkService::class.java).setAction(ACTION_CONTROL_ANSWER).putExtra(EXTRA_TEXT, choice),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        notify(
+            NOTIFY_CONTROL_ASK,
+            alert("$name wants to control this phone", "It can tap, swipe and type for you. A red border shows while it does.")
+                .setAutoCancel(true)
+                .setTimeoutAfter(60_000)
+                .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_link), "Allow once", action("once", 20)).build())
+                .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_link), "Always allow", action("always", 21)).build())
+                .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stop), "Deny", action("deny", 22)).build())
+                .build(),
+        )
+        return try {
+            answer.get(60, TimeUnit.SECONDS)
+        } catch (_: Exception) {
+            "deny"
+        } finally {
+            controlChoice = null
+            cancelNotification(NOTIFY_CONTROL_ASK)
+        }
+    }
+
+    private fun controlNotification(name: String) {
+        val stop = PendingIntent.getService(
+            this, 23, Intent(this, LinkService::class.java).setAction(ACTION_CONTROL_STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        notify(
+            NOTIFY_CONTROL,
+            alert("Controlled from $name", "Tap Stop to take control back")
+                .setOngoing(true)
+                .setColor(0xFFE5484D.toInt())
+                .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stop), "Stop", stop).build())
+                .build(),
+        )
     }
 
     private fun errorText(e: Exception): String = when (e) {

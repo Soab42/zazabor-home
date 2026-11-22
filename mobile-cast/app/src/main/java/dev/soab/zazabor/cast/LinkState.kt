@@ -52,6 +52,15 @@ class LinkPrefs(context: Context) {
             prefs.edit().putBoolean("clip", v).apply()
         }
 
+    /** PCs the user let control this phone without asking each time. */
+    fun controlAlways(pcId: String): Boolean = prefs.getStringSet("controlAlways", emptySet())?.contains(pcId) == true
+
+    fun setControlAlways(pcId: String, on: Boolean) {
+        val now = (prefs.getStringSet("controlAlways", emptySet()) ?: emptySet()).toMutableSet()
+        if (on) now.add(pcId) else now.remove(pcId)
+        prefs.edit().putStringSet("controlAlways", now).apply()
+    }
+
     fun key(pcId: String): ByteArray? = prefs.getString("key_$pcId", null)?.let { ZlnkCrypto.unhex(it) }
 
     fun paired(pcId: String, name: String, host: String, port: Int, key: ByteArray) {

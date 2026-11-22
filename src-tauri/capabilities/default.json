@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main window, the extra windows it opens, the note windows and the clipboard popup",
+  "description": "Permissions for the main window, the extra windows it opens, the note windows, the clipboard popup and the remote-control question and pill",
   "windows": [
     "main",
     "window-*",
@@ -9,7 +9,8 @@
     "clipboard-*",
     "recorder",
     "recorder-*",
-    "alerts"
+    "alerts",
+    "remote-ui-*"
   ],
   "permissions": [
     "core:default",

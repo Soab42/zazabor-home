@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">Zazabor Link</string>
     <string name="send_to_pc">Send to PC</string>
+    <string name="control_service_label">Zazabor Link remote control</string>
+    <string name="control_service_description">Lets your paired PC tap, swipe and type on this phone while you have allowed it, and only then. A red border shows on the screen whenever it is in use. It does not read your screen or what you type.</string>
 </resources>

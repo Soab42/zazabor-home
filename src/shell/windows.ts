@@ -15,7 +15,7 @@ import type { ModuleId } from "./module";
  * `siblings` are the files a window for one file browses through, in order.
  */
 export type WindowStart =
-  | { module: ModuleId; path?: string | null; siblings?: string[] | null; shape?: "phone" | null }
+  | { module: ModuleId; path?: string | null; siblings?: string[] | null; shape?: "phone" | null; phoneId?: string | null }
   | { module: "viewer"; path: string }
   /** A sticky note on the desktop; `path` is the note's id. */
   | { module: "note"; path: string }
@@ -23,6 +23,8 @@ export type WindowStart =
   | { module: "clipboard-popup"; path?: null }
   /** The corner window for call cards and message toasts. */
   | { module: "alerts"; path?: null }
+  /** The small always-on-top windows of a remote-control session: the question and the "Controlled from" pill. */
+  | { module: "remote-ui"; path?: null }
   /** The screen recorder (`zazabor --record`), its control bar, and its area picker (`path`: the monitor). */
   | { module: "recorder" | "recorder-pill" | "recorder-area"; path?: string | null };
 
@@ -54,8 +56,8 @@ export function openWindow(module: ModuleId, path?: string, siblings?: string[])
  * Opens a phone's screen (a mirror's stream address) in its own window: portrait-shaped, only the
  * picture, resizable. Closing the window stops the mirror.
  */
-export function openPhoneScreenWindow(url: string, title: string) {
-  invoke("open_window", { module: "video", path: url, siblings: [url], shape: "phone", title })
+export function openPhoneScreenWindow(url: string, title: string, phoneId?: string | null) {
+  invoke("open_window", { module: "video", path: url, siblings: [url], shape: "phone", title, phoneId: phoneId ?? null })
     .catch((err) => console.warn("Could not open a window:", err));
 }
 
