@@ -151,7 +151,7 @@ Android emulator against the real app on a nested display.
   `media.rs` (MPRIS on the session bus, volume through wpctl/pactl), `killswitch.rs` (Ctrl+Alt+Esc
   grabbed while a session runs), `ui.rs` (the question and the pill, one small window per monitor),
   `store.rs` (Settings → Phone → Remote control), `mod.rs` (sessions, `remote.start`, the commands).
-- **Phone, `mobile-cast/` (Zazabor Link 0.5.0):** `RemoteActivity` (Screen, Touchpad, Keyboard,
+- **Phone, `mobile-cast/` (Zazabor Link 0.5.1):** `RemoteActivity` (Screen, Touchpad, Keyboard,
   Media), `RemoteClient`, `RemoteDecoder` (MediaCodec, low latency, into a SurfaceView),
   `RemoteGestures` (the touch → mouse engine and the zoom/pan viewport), `RemoteProto`; and for PC →
   phone `RemoteInputService` (the accessibility service), `RemoteControl` (the `ctl` actions).

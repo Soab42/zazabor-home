@@ -710,8 +710,13 @@ class LinkService : Service() {
      */
     private fun controlStart(msg: JSONObject) {
         val name = msg.optString("name", prefs.pcName).ifBlank { prefs.pcName }
-        if (!RemoteInputService.enabled(this) || RemoteInputService.instance == null) {
+        if (!RemoteInputService.enabled(this)) {
             throw NotAllowed("Turn on Zazabor Link in the phone's Settings → Accessibility first")
+        }
+        if (RemoteInputService.instance == null) {
+            // Switched on, but Android isn't running it (it stops it after the app was force-stopped
+            // or crashed, and doesn't start it again until the switch is flipped).
+            throw NotAllowed("On the phone, turn Zazabor Link off and on again in Settings → Accessibility: Android stopped it")
         }
         if (Control.active) throw NotAllowed("This phone is already being controlled")
         val pcId = prefs.pcId ?: throw NotAllowed("Not paired")
