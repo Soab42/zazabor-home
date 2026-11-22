@@ -9,6 +9,7 @@ import { errorText, walletApi, type Backup, type Earnings, type WalletState } fr
 import { confirmDialog } from "../time/dialog";
 import { devicesRow } from "./devices";
 import { money, plain, setCurrencies, thisMonth } from "./format";
+import { PHONE_APPS, phoneAppCard } from "../../shell/phone-apps";
 
 /**
  * Settings → Wallet: amounts hidden by default, how money is shown, hourly rates for Time
@@ -112,6 +113,8 @@ export function walletCategory(host: { readonly config: Config; configChanged():
       { title: "Earnings", rows: [ratesRow] },
       { title: "Devices", rows: [devices.row] },
       { title: "Data", rows: [backupRow, { label: "", el: note }] },
+      // On the PC only: the phone app's QR code (the phone app shares this page).
+      ...(document.documentElement.classList.contains("phone") ? [] : [{ title: "On your phone", rows: [{ label: "Zazabor Wallet", el: h("div", { class: "sf-row plain pa-inline" }, phoneAppCard(PHONE_APPS.find((a) => a.key === "wallet")!)) }] }]),
     ],
     refresh: () => {
       hide.checked = host.config.wallet.hideAmounts;

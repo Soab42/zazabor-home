@@ -5,6 +5,7 @@ import { h } from "../../ui/dom";
 import { isPhone } from "./phone";
 import { errorText, FREE_BD_PLAYLIST, newId, onTv, sizeText, tvApi, type CacheInfo, type Category as TvCategory, type Progress } from "./api";
 import "./settings.css";
+import { PHONE_APPS, phoneAppCard } from "../../shell/phone-apps";
 
 const normalizeUrl = (text: string) => {
   const t = text.trim();
@@ -262,6 +263,8 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
       { title: "Cache", rows: group(cacheBox) },
       { title: "Downloads", rows: group(downloadsBox) },
       { title: "Live TV", rows: group(liveBox) },
+      // On the PC only: the phone app's QR code (the phone app shares this page).
+      ...(isPhone ? [] : [{ title: "On your phone", rows: [{ label: "Zazabor TV", el: h("div", { class: "sf-row plain pa-inline" }, phoneAppCard(PHONE_APPS.find((a) => a.key === "tv")!)) }] }]),
     ],
   };
 }

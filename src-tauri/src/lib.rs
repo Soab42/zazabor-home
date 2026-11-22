@@ -22,6 +22,7 @@ mod migrate;
 mod music;
 mod notes;
 mod office;
+mod phoneapps;
 mod phonelink;
 mod photo;
 mod programs;
@@ -38,6 +39,7 @@ mod update;
 mod video;
 mod videoedit;
 mod wallet;
+mod window_aspect;
 
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -620,6 +622,9 @@ pub fn run() {
             wallet::wallet_earnings_post,
             wallet::wallet_sync_info,
             wallet::wallet_sync_invite,
+            phoneapps::qr_svg,
+            window_aspect::window_aspect,
+            phoneapps::phone_apps_info,
             wallet::wallet_sync_cancel_invite,
             wallet::wallet_sync_join,
             wallet::wallet_sync_now,

@@ -46,6 +46,8 @@ pub struct Spec {
     pub service: String,
     pub url: String,
     pub zoom: f64,
+    /// "light", "dark" or "system" (store::valid_appearance).
+    pub appearance: String,
 }
 
 struct Panel {
@@ -188,7 +190,34 @@ fn overlay(app: &AppHandle) -> Result<gtk::Overlay, String> {
     vbox.pack_start(&overlay, true, true, 0);
     vbox.reorder_child(&overlay, 0);
     overlay.show_all();
+    if std::env::var_os("ZAZABOR_MSG_DEBUG").is_some() {
+        gtk::glib::timeout_add_seconds_local(1, debug_dump);
+    }
     Ok(overlay)
+}
+
+/// ZAZABOR_MSG_DEBUG: prints the state of every panel's widget whenever it changes.
+fn debug_dump() -> gtk::glib::ControlFlow {
+    thread_local!(static LAST: RefCell<String> = RefCell::new(String::new()));
+    let mut lines: Vec<String> = PANELS.with(|p| {
+        p.borrow()
+            .iter()
+            .map(|(id, panel)| {
+                let w = panel.view.upcast_ref::<gtk::Widget>();
+                let a = w.allocation();
+                format!("{id}: visible={} mapped={} focus={} alloc={},{} {}x{} rect={:?}", w.is_visible(), w.is_mapped(), w.has_focus(), a.x(), a.y(), a.width(), a.height(), panel.rect)
+            })
+            .collect()
+    });
+    lines.sort();
+    let text = lines.join(" | ");
+    LAST.with(|l| {
+        if *l.borrow() != text {
+            eprintln!("[msgdbg] {text}");
+            *l.borrow_mut() = text;
+        }
+    });
+    gtk::glib::ControlFlow::Continue
 }
 
 fn build_view(app: &AppHandle, spec: &Spec, dir: &Path) -> Result<WebView, String> {
@@ -201,6 +230,9 @@ fn build_view(app: &AppHandle, spec: &Spec, dir: &Path) -> Result<WebView, Strin
     let context = WebContext::builder().website_data_manager(&manager).build();
     watch_downloads(app, &context);
     let content = UserContentManager::new();
+    // The colour scheme the page sees (inject.js reads it). Only the three checked values ever get here.
+    let scheme = if super::store::valid_appearance(&spec.appearance) { spec.appearance.as_str() } else { "light" };
+    content.add_script(&UserScript::new(&format!("window.__zmsgScheme = \"{scheme}\";"), UserContentInjectedFrames::AllFrames, UserScriptInjectionTime::Start, &[], &[]));
     content.add_script(&UserScript::new(include_str!("inject.js"), UserContentInjectedFrames::TopFrame, UserScriptInjectionTime::Start, &[], &[]));
     // The page's reports (inject.js) arrive here; they are untrusted and validated in events.rs.
     content.register_script_message_handler("zmsg");
@@ -220,6 +252,13 @@ fn build_view(app: &AppHandle, spec: &Spec, dir: &Path) -> Result<WebView, Strin
         settings.set_enable_developer_extras(cfg!(debug_assertions));
     }
     view.set_zoom_level(spec.zoom.clamp(store::MIN_ZOOM, store::MAX_ZOOM));
+    // A click into the panel gives it the keyboard focus (typing must reach it, not the page).
+    view.connect_button_press_event(|view, _| {
+        if !view.has_focus() {
+            view.grab_focus();
+        }
+        gtk::glib::Propagation::Proceed
+    });
     let (service, home) = (spec.service.clone(), spec.url.clone());
     let (nav_app, nav_id) = (app.clone(), spec.id.clone());
     view.connect_decide_policy(move |_, decision, kind| {
@@ -321,6 +360,10 @@ pub fn set_rect(app: &AppHandle, id: &str, rect: Rect) -> Result<(), String> {
     let id = id.to_string();
     on_main(app, move || {
         with_panel(&id, |p| {
+            // The page says it again every couple of seconds: nothing to do when it hasn't moved.
+            if p.rect == rect && p.view.is_visible() {
+                return;
+            }
             p.rect = rect;
             p.view.set_size_request(rect.w as i32, rect.h as i32);
             if let Some(parent) = p.view.parent() {
@@ -330,6 +373,15 @@ pub fn set_rect(app: &AppHandle, id: &str, rect: Rect) -> Result<(), String> {
     })
 }
 
+/// Gives the keyboard focus back to the main web view (the page: sheets, menus, shortcuts). A hidden
+/// or closed panel that had the focus leaves the window with none, and then keys, Escape included,
+/// reach nothing.
+fn focus_main(overlay: &gtk::Overlay) {
+    if let Some(main) = overlay.child() {
+        main.grab_focus();
+    }
+}
+
 /// Shows this panel (with the keyboard focus) and hides every other; None hides them all.
 pub fn show_only(app: &AppHandle, id: Option<&str>) -> Result<(), String> {
     let id = id.map(str::to_string);
@@ -337,10 +389,27 @@ pub fn show_only(app: &AppHandle, id: Option<&str>) -> Result<(), String> {
         PANELS.with(|p| {
             for (key, panel) in p.borrow().iter() {
                 if Some(key) == id.as_ref() {
+                    // Whenever the page asks (it repeats the request now and then), the panel ends up
+                    // shown, on top and placed. It takes the keyboard focus only when it comes up, so
+                    // a repeat never pulls the focus away from the page.
+                    let was_up = panel.view.is_visible();
                     panel.view.show();
-                    panel.view.grab_focus();
+                    if let Some(window) = panel.view.window() {
+                        window.raise();
+                    }
+                    if !was_up {
+                        panel.view.queue_resize();
+                        panel.view.queue_draw();
+                        panel.view.grab_focus();
+                    }
                 } else {
+                    let had_focus = panel.view.has_focus();
                     panel.view.hide();
+                    if had_focus && id.is_none() {
+                        if let Some(overlay) = panel.view.parent().and_then(|p| p.downcast::<gtk::Overlay>().ok()) {
+                            focus_main(&overlay);
+                        }
+                    }
                 }
             }
         });
@@ -400,8 +469,14 @@ pub fn destroy(app: &AppHandle, id: &str, wipe: bool) -> Result<(), String> {
     let key = id.to_string();
     on_main(app, move || {
         if let Some(panel) = PANELS.with(|p| p.borrow_mut().remove(&key)) {
+            let had_focus = panel.view.has_focus();
             if let Some(parent) = panel.view.parent().and_then(|p| p.downcast::<gtk::Container>().ok()) {
                 parent.remove(&panel.view);
+                if had_focus {
+                    if let Ok(overlay) = parent.downcast::<gtk::Overlay>() {
+                        focus_main(&overlay);
+                    }
+                }
             }
         }
         Ok(())

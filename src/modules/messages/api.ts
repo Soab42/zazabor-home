@@ -18,6 +18,8 @@ export interface Account {
   zoom: number;
   /** "panel": inside Zazabor; "browser": its own browser app window (no unread counts or notifications from Zazabor). */
   mode: "panel" | "browser";
+  /** The colour scheme the page is told the system has (light by default). */
+  appearance: "light" | "dark" | "system";
   unread: number;
   /** Its panel is alive (not sleeping, and opened at least once since the app started). */
   awake: boolean;
@@ -50,6 +52,7 @@ export interface AccountPatch {
   sleepAfter?: number | null;
   zoom?: number;
   mode?: "panel" | "browser";
+  appearance?: "light" | "dark" | "system";
 }
 
 export const msg = {
@@ -79,6 +82,7 @@ export interface Events {
   "msg-notified": { id: string };
   "msg-open": { id: string };
   "msg-key": { key: string };
+  "msg-call-browser": { id: string };
   "msg-hint": { text: string };
   "msg-download": { ok: boolean; name: string; reason?: string };
 }

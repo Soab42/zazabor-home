@@ -36,6 +36,9 @@ pub enum Event {
     Call { ringing: bool, name: String, video: bool },
     /// The page closed a notification (a call's, usually: it stops ringing).
     NotifyClosed { tag: String, title: String },
+    /// The page tried to start a call (or showed its "browser not supported" notice): this web
+    /// engine has no WebRTC, so the account's browser window is offered. `via` is "click" or "notice".
+    CallNeedsBrowser { via: String },
 }
 
 #[derive(Deserialize)]
@@ -84,6 +87,7 @@ pub fn parse_json(json: &str) -> Option<Event> {
         "title" => Some(Event::Title(clip(&raw.title, MAX_TITLE))),
         "unread" => Some(Event::Unread(raw.n.min(MAX_UNREAD))),
         "call" => Some(Event::Call { ringing: raw.state == "ringing", name: clip(&raw.name, MAX_TITLE), video: raw.video }),
+        "call-needs-browser" => Some(Event::CallNeedsBrowser { via: if raw.via == "click" { "click" } else { "notice" }.into() }),
         "notify-close" => Some(Event::NotifyClosed { tag: clip(&raw.tag, MAX_TAG), title: clip(&raw.title, MAX_TITLE) }),
         "key" if SHORTCUTS.contains(&raw.key.as_str()) => Some(Event::Key(raw.key)),
         _ => None,
@@ -104,6 +108,20 @@ fn rate_ok(id: &str) -> bool {
         return false;
     }
     recent.push_back(now);
+    true
+}
+
+static CALL_HINT: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// At most one "call in the browser window" prompt per account every 5 seconds.
+fn call_hint_ok(id: &str) -> bool {
+    let mut all = CALL_HINT.lock().unwrap_or_else(|e| e.into_inner());
+    let last = all.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    if last.get(id).is_some_and(|t| now.duration_since(*t) < Duration::from_secs(5)) {
+        return false;
+    }
+    last.insert(id.to_string(), now);
     true
 }
 
@@ -159,6 +177,13 @@ pub fn deliver(app: &AppHandle, id: &str, event: Event) {
         Event::Call { ringing, name, video } => {
             eprintln!("[messages] {id}: call dialog {}", if ringing { "ringing" } else { "gone" });
             alerts::web_call(&account, &name, video, ringing);
+        }
+        Event::CallNeedsBrowser { via } => {
+            if !call_hint_ok(id) {
+                return;
+            }
+            eprintln!("[messages] {id}: a call needs the browser window ({via})");
+            let _ = app.emit("msg-call-browser", serde_json::json!({ "id": id }));
         }
         Event::NotifyClosed { tag: _, title } => {
             // A closed notification ends the call it announced; another chat's closing doesn't.
@@ -224,6 +249,22 @@ mod tests {
         assert_eq!(parse_json(r#"{"t":"call","state":"ringing","name":"Ann","video":true}"#), Some(Event::Call { ringing: true, name: "Ann".into(), video: true }));
         assert_eq!(parse_json(r#"{"t":"call","state":"ended"}"#), Some(Event::Call { ringing: false, name: String::new(), video: false }));
         assert_eq!(parse_json(r#"{"t":"notify-close","title":"Ann","tag":"c"}"#), Some(Event::NotifyClosed { tag: "c".into(), title: "Ann".into() }));
+    }
+
+    #[test]
+    fn reads_call_needs_browser() {
+        assert_eq!(parse_json(r#"{"t":"call-needs-browser","via":"click"}"#), Some(Event::CallNeedsBrowser { via: "click".into() }));
+        // Anything else collapses to "notice": the page can't smuggle text through.
+        assert_eq!(parse_json(r#"{"t":"call-needs-browser","via":"<script>"}"#), Some(Event::CallNeedsBrowser { via: "notice".into() }));
+        assert_eq!(parse_json(r#"{"t":"call-needs-browser"}"#), Some(Event::CallNeedsBrowser { via: "notice".into() }));
+        assert_eq!(parse_json(r#"{"t":"call-needs-browsers"}"#), None);
+    }
+
+    #[test]
+    fn limits_call_prompts() {
+        assert!(call_hint_ok("hint-test"));
+        assert!(!call_hint_ok("hint-test"));
+        assert!(call_hint_ok("hint-test-2"));
     }
 
     #[test]

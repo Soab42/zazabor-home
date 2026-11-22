@@ -6,6 +6,17 @@ export interface ToastAction {
 }
 
 let current: { el: HTMLElement; timer: number } | null = null;
+/** Where toasts go instead of the bottom of the window (setToastAnchor). */
+let anchor: HTMLElement | null = null;
+
+/**
+ * Shows toasts inside `el` (null: the bottom of the window again). Messages uses its account bar:
+ * a native chat panel draws above the page, so a toast at the bottom would sit under it, and
+ * hiding the panel for each toast made the chat look frozen for seconds.
+ */
+export function setToastAnchor(el: HTMLElement | null) {
+  anchor = el;
+}
 
 function dismiss(toast: { el: HTMLElement; timer: number }) {
   clearTimeout(toast.timer);
@@ -34,9 +45,18 @@ export function showToast(message: string, action?: ToastAction, ms = 5000) {
       },
     }, action.label));
   }
-  el.addEventListener("pointerenter", () => clearTimeout(toast.timer));
-  el.addEventListener("pointerleave", arm);
-  document.body.append(el);
+  // Resting the pointer on a toast with a button holds it (to reach the button). A plain message
+  // always goes on its own: it can cover a native panel, which stays hidden while it shows.
+  if (action) {
+    el.addEventListener("pointerenter", () => clearTimeout(toast.timer));
+    el.addEventListener("pointerleave", arm);
+  }
+  if (anchor?.isConnected && anchor.offsetParent !== null) {
+    el.classList.add("anchored");
+    anchor.append(el);
+  } else {
+    document.body.append(el);
+  }
   current = toast;
   arm();
 }

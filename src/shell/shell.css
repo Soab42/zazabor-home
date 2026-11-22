@@ -210,6 +210,8 @@ input.switch:disabled { opacity: 0.45; cursor: default; }
 .st-about img { border-radius: 14.5px; box-shadow: 0 0 0 0.5px var(--line-strong), var(--shadow); }
 .st-about-version { margin-top: 4px; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .st-about-version .st-value { color: var(--muted); }
+.st-about-creator { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.st-about-creator strong { color: var(--text-2); font-weight: 650; }
 
 /* ---- first-run wizard ---------------------------------------------------------------------- */
 

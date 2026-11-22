@@ -57,7 +57,7 @@
 /* ---- main */
 
 .msg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.msg-bar { flex: none; display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 12px 0 16px; box-shadow: inset 0 -0.5px 0 var(--line); }
+.msg-bar { position: relative; flex: none; display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 12px 0 16px; box-shadow: inset 0 -0.5px 0 var(--line); }
 .msg-bar-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
 .msg-bar-title strong { overflow: hidden; text-overflow: ellipsis; font-size: var(--text-md); font-weight: 700; }
 .msg-bar-title span { color: var(--muted); font-size: var(--text-sm); }
@@ -133,3 +133,9 @@
 .msg-browser-opt span { display: flex; flex-direction: column; gap: 2px; }
 .msg-browser-opt .msg-field-hint { color: var(--muted); font-size: var(--text-xs); }
 .msg-placeholder .btn + .btn { margin-top: -2px; }
+
+/* Calls can't run in a panel: a strip above it offers the account's browser window. */
+.msg-callbar { display: flex; align-items: center; gap: var(--space-3); padding: 6px var(--space-4); flex: none;
+  background: var(--accent-soft); font-size: var(--text-sm); }
+.msg-callbar[hidden] { display: none; }
+.msg-callbar-text { flex: 1; min-width: 0; }

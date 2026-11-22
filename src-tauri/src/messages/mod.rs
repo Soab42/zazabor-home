@@ -128,8 +128,12 @@ pub async fn msg_add(app: AppHandle, service: String, name: String, url: Option<
 pub async fn msg_update(app: AppHandle, id: String, patch: Patch) -> Result<Account, String> {
     let zoom = patch.zoom;
     let to_browser = patch.mode.as_deref() == Some("browser");
+    let before = store::read(|s| s.get(&id).map(|a| a.appearance.clone()));
     let account = store::change(|s| s.update(&id, patch))?;
-    if to_browser {
+    // The colour scheme is set when a panel is built: close it (the login stays) so it opens again
+    // with the new one the next time it's shown.
+    let rebuild = !to_browser && before.as_deref().is_some_and(|b| b != account.appearance);
+    if to_browser || rebuild {
         // Its panel goes away; the login doesn't carry over to the browser.
         panels::destroy(&app, &id, false)?;
         rt(|r| {
@@ -183,7 +187,7 @@ pub async fn msg_show(app: AppHandle, id: String, rect: Rect) -> Result<(), Stri
     }
     let woke = !panels::exists_on_main(&app, &id);
     if woke {
-        panels::create(&app, Spec { id: id.clone(), service: account.service, url: account.url, zoom: account.zoom }, rect)?;
+        panels::create(&app, Spec { id: id.clone(), service: account.service, url: account.url, zoom: account.zoom, appearance: account.appearance }, rect)?;
     }
     panels::set_rect(&app, &id, rect)?;
     panels::show_only(&app, Some(&id))?;
@@ -243,10 +247,12 @@ pub async fn msg_hibernate(app: AppHandle, id: String) -> Result<(), String> {
 /// Opens (or brings up) the account's own browser window: a Chromium-family app window with a
 /// profile of its own, never the user's browser profile. Without such a browser, the default one.
 #[tauri::command]
-pub async fn msg_open_browser_window(id: String) -> Result<(), String> {
+pub async fn msg_open_browser_window(app: AppHandle, id: String) -> Result<(), String> {
     let account = store::read(|s| s.get(&id).cloned()).ok_or("no such account")?;
     let profile = panels::browser_profile(&id)?;
-    crate::meet::browser::open(&account.url, &profile)
+    // The chat open in the panel right now, so the call can be started in the same place.
+    let current = panels::current_uri(&app, &id);
+    crate::meet::browser::open(&services::browser_target(&account.service, &account.url, current.as_deref()), &profile)
 }
 
 /// The browser an account's window would use, for the page's wording.
@@ -327,7 +333,7 @@ pub async fn msg_start(app: AppHandle) -> Result<(), String> {
     let mut any = false;
     for a in always {
         if !panels::exists_on_main(&app, &a.id) {
-            panels::create(&app, Spec { id: a.id.clone(), service: a.service, url: a.url, zoom: a.zoom }, rect)?;
+            panels::create(&app, Spec { id: a.id.clone(), service: a.service, url: a.url, zoom: a.zoom, appearance: a.appearance }, rect)?;
             rt(|r| r.last_used.insert(a.id, Instant::now()));
             any = true;
         }

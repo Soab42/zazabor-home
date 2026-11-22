@@ -23,10 +23,22 @@ pub struct Account {
     /// Where it runs: "panel" (inside Zazabor) or "browser" (its own browser app window).
     #[serde(default = "panel_mode")]
     pub mode: String,
+    /// The colour scheme the page is told the system has: "light" (the default), "dark", or
+    /// "system" (whatever Zazabor's web engine reports, which follows the desktop's dark theme).
+    #[serde(default = "light_scheme")]
+    pub appearance: String,
 }
 
 fn panel_mode() -> String {
     "panel".into()
+}
+
+fn light_scheme() -> String {
+    "light".into()
+}
+
+pub fn valid_appearance(a: &str) -> bool {
+    matches!(a, "light" | "dark" | "system")
 }
 
 pub fn valid_mode(mode: &str) -> bool {
@@ -70,6 +82,7 @@ pub struct Patch {
     pub sleep_after: Option<Option<u32>>,
     pub zoom: Option<f64>,
     pub mode: Option<String>,
+    pub appearance: Option<String>,
 }
 
 fn double_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u32>>, D::Error> {
@@ -144,6 +157,7 @@ impl Store {
             sleep_after: if always { None } else { Some(self.settings.default_sleep.max(1)) },
             zoom: 1.0,
             mode: mode.into(),
+            appearance: light_scheme(),
         };
         self.accounts.push(account.clone());
         Ok(account)
@@ -169,6 +183,12 @@ impl Store {
                 return Err("unknown mode".into());
             }
             account.mode = m;
+        }
+        if let Some(a) = patch.appearance {
+            if !valid_appearance(&a) {
+                return Err("unknown appearance".into());
+            }
+            account.appearance = a;
         }
         if let Some(z) = patch.zoom {
             account.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
@@ -233,6 +253,15 @@ pub fn change<T>(f: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, S
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn appearance_defaults_to_light_and_refuses_unknown_values() {
+        assert!(valid_appearance("light") && valid_appearance("dark") && valid_appearance("system"));
+        assert!(!valid_appearance("") && !valid_appearance("\"; alert(1); \""));
+        let old: Account = serde_json::from_str(r#"{"id":"a","service":"whatsapp","url":"https://web.whatsapp.com/","name":"W","order":0,"muted":false,"sleepAfter":null,"zoom":1.0}"#).unwrap();
+        assert_eq!(old.appearance, "light", "accounts saved before the setting existed read as light");
+    }
+
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {

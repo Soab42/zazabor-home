@@ -9,6 +9,7 @@
 //! no window.
 
 pub mod ai;
+mod remux;
 pub mod browser;
 pub mod invite;
 pub mod room;
@@ -833,6 +834,9 @@ pub fn init(app: AppHandle, data_dir: PathBuf) {
     match Hub::new(Box::new(AppHost(app)), conn, data_dir, rec_dir) {
         Ok(hub) => {
             let _ = HUB.set(hub.clone());
+            // Recordings made before 0.3.5 have no duration or cues: fix them once, quietly.
+            let fixer = hub.clone();
+            std::thread::spawn(move || fixer.make_old_recordings_seekable());
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(30));
                 hub.tick();
@@ -1005,6 +1009,41 @@ pub async fn meet_domain(mode: String, hostname: Option<String>, token: Option<S
 #[tauri::command]
 pub async fn meet_domain_test() -> Result<DomainCheck> {
     blocking(|hub| hub.check_domain()).await
+}
+
+
+impl Hub {
+    /// Rewrites one finished recording so players know its length and can seek (remux.rs), and
+    /// remembers that it's done.
+    pub(crate) fn make_seekable(&self, rec_id: &str) {
+        let Ok(r) = self.with_db(|c| store::recording(c, rec_id)) else { return };
+        let key = format!("seekable:{rec_id}");
+        if r.ended_at.is_none() || self.with_db(|c| Ok(store::meta(c, &key).is_some())).unwrap_or(false) {
+            return;
+        }
+        let path = PathBuf::from(&r.path);
+        if !path.exists() {
+            return;
+        }
+        match remux::make_seekable(&path) {
+            Ok(()) => {
+                let _ = self.with_db(|c| store::set_meta(c, &key, "1"));
+                if let Ok(size) = std::fs::metadata(&path).map(|m| m.len() as i64) {
+                    let _ = self.with_db(|c| store::grow_recording(c, rec_id, size, r.ended_at.unwrap_or_else(now_ms)));
+                }
+                self.changed();
+            }
+            Err(err) => eprintln!("Meet: recording {rec_id} stays unseekable: {err}"),
+        }
+    }
+
+    /// Every finished recording that hasn't been made seekable yet, oldest first.
+    fn make_old_recordings_seekable(&self) {
+        let Ok(all) = self.with_db(|c| store::recordings(c)) else { return };
+        for r in all.iter().rev() {
+            self.make_seekable(&r.id);
+        }
+    }
 }
 
 #[cfg(test)]

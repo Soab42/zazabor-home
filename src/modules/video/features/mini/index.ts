@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, currentMonitor, LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { basename, h, stripExtension } from "../../../../ui/dom";
 import { icon } from "../../../../ui/icons";
@@ -72,6 +73,19 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
   volume.addEventListener("input", () => player.setVolume(Number(volume.value) / 100));
   const volumeBox = h("div", { class: "vp-mini-vol" }, muteButton, h("div", { class: "vp-mini-volume-pop" }, h("div", {}, volume)));
   const dragLayer = h("div", { class: "vp-mini-drag" });
+  // Grab zones on the edges and corners: the mini window has no frame of its own to resize by. No
+  // bottom-edge zone: the seek line lives there (the bottom corners resize just the same).
+  const GRIPS = [["n", "North"], ["e", "East"], ["w", "West"], ["ne", "NorthEast"], ["nw", "NorthWest"], ["se", "SouthEast"], ["sw", "SouthWest"]] as const;
+  const grips = GRIPS.map(([side, direction]) => {
+    const grip = h("div", { class: `vp-mini-grip ${side}`, "aria-hidden": "true" });
+    grip.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !active) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void getCurrentWindow().startResizeDragging(direction).catch(() => undefined);
+    });
+    return grip;
+  });
   // Only the buttons, the volume and the seek line take the pointer; everything else in the overlay
   // lets presses through to `dragLayer`, so holding anywhere on the player moves the window.
   const chrome = h("div", { class: "vp-mini-chrome" },
@@ -81,7 +95,7 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
         h("div", { class: "vp-mini-info" }, titleEl, timeEl),
         h("div", { class: "vp-mini-actions" }, volumeBox, pinButton, returnButton, closeButton)),
       seek));
-  const overlay = h("div", { class: "vp-mini", hidden: true }, dragLayer, chrome);
+  const overlay = h("div", { class: "vp-mini", hidden: true }, dragLayer, chrome, ...grips);
   root?.append(overlay);
 
   /** Fades the controls in; they fade out `IDLE_MS` after the pointer last moved (or at once on leaving). */
@@ -275,6 +289,8 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
     try {
       await win.setMinSize(new LogicalSize(min.width, min.height));
       await win.setSize(new LogicalSize(size.width, size.height));
+      // The window manager keeps this shape while an edge is dragged (keepAspect is the fallback).
+      await invoke("window_aspect", { aspect: size.aspect, minWidth: min.width, minHeight: min.height }).catch(() => undefined);
     } catch (err) {
       console.warn("Could not size the mini player:", err);
     }
@@ -373,6 +389,7 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
     try {
       await win.setAlwaysOnTop(before?.alwaysOnTop ?? false);
       await win.setDecorations(before?.decorated ?? true).catch(() => undefined);
+      await invoke("window_aspect", { aspect: null, minWidth: NORMAL_MIN.width, minHeight: NORMAL_MIN.height }).catch(() => undefined);
       await win.setMinSize(new LogicalSize(NORMAL_MIN.width, NORMAL_MIN.height));
       if (before) {
         await win.setSize(before.size);

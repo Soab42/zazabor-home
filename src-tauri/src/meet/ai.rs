@@ -292,13 +292,20 @@ impl Hub {
         let prefix = format!("{rec}:");
         lock(&self.ai.tracks).retain(|k, _| !k.starts_with(&prefix));
         self.changed();
-        if self.ai_settings().auto {
-            if let Ok(r) = self.with_db(|c| store::recording(c, rec)) {
-                if !list_tracks(Path::new(&r.path)).is_empty() && !paths(Path::new(&r.path)).transcript.exists() && read_saved(&paths(Path::new(&r.path)).state).is_none() {
-                    let _ = self.ai_start(rec, RunOptions::default());
+        // First give the file a duration and cues (players can't seek it otherwise), then the job,
+        // so the job never reads a file that is being replaced.
+        let hub = self.clone();
+        let rec = rec.to_string();
+        std::thread::spawn(move || {
+            hub.make_seekable(&rec);
+            if hub.ai_settings().auto {
+                if let Ok(r) = hub.with_db(|c| store::recording(c, &rec)) {
+                    if !list_tracks(Path::new(&r.path)).is_empty() && !paths(Path::new(&r.path)).transcript.exists() && read_saved(&paths(Path::new(&r.path)).state).is_none() {
+                        let _ = hub.ai_start(&rec, RunOptions::default());
+                    }
                 }
             }
-        }
+        });
     }
 
     /// Every 30 s: recordings that stopped receiving chunks have ended.

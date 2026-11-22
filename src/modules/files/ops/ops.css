@@ -133,3 +133,14 @@
   @keyframes ops-toast-in { from { opacity: 0; } }
   .btn.danger:active, .ops-toast-action:active { transform: none; }
 }
+
+/* A toast inside its anchor (setToastAnchor): centred in that bar, not over native views. */
+.ops-toast.anchored {
+  position: absolute; left: 50%; top: 50%; bottom: auto; z-index: 5; max-width: calc(100% - 24px);
+  padding-top: 4px; padding-bottom: 4px; font-size: var(--text-sm); transform: translate(-50%, -50%);
+}
+.ops-toast.anchored .ops-toast-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-toast.anchored { animation-name: ops-toast-in-anchored; }
+.ops-toast.anchored.leaving { animation-name: ops-toast-out-anchored; transform: translate(-50%, -50%); }
+@keyframes ops-toast-in-anchored { from { opacity: 0; transform: translate(-50%, -20%); } }
+@keyframes ops-toast-out-anchored { to { opacity: 0; transform: translate(-50%, -80%); } }

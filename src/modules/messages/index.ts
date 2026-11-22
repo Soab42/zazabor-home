@@ -5,11 +5,12 @@ import { icon } from "../../ui/icons";
 import { openMenu, type MenuItem } from "../../ui/menu";
 import "../files/ops/ops.css";
 import { nameSheet } from "../files/ops/sheets";
-import { showToast } from "../files/ops/toast";
+import { setToastAnchor, showToast } from "../files/ops/toast";
 import { errorText, msg, onMsg, type Account, type Rect } from "./api";
 import { serviceIcon, serviceInfo, SERVICES } from "./catalogue";
 import { onOpenRequest, takePendingOpen } from "./global";
 import "./messages.css";
+import { ASSERT_EVERY, nextStep, pollDue, snapshotShown, wantedPanel } from "./panel-plan";
 import { addAccountSheet, quickSwitcher, removeAccountSheet } from "./sheets";
 import { accounts, account, refresh, settings, startStore, subscribe } from "./store";
 
@@ -46,6 +47,9 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
   /** What Rust shows now, as far as this page knows. */
   let shownId: string | null = null;
   let lastRect: Rect | null = null;
+  /** When Rust was last told which panel to show, and when a show last failed (ms; see pollDue). */
+  let lastAssert = 0;
+  let lastFailure = 0;
   let phoneModule: { el: HTMLElement; show(force: boolean): void; phone: () => unknown } | null = null;
   let phoneLoading = false;
 
@@ -70,12 +74,15 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
   const sleepButton = h("button", { class: "icon-btn small", type: "button", title: "Hibernate: unload it to free memory", "aria-label": "Hibernate" }, icon("hourglass", 16));
   const bar = h("header", { class: "msg-bar" }, barTitle, reloadButton, h("span", { class: "sep" }), zoomOut, zoomLabel, zoomIn, h("span", { class: "sep" }), browserButton, sleepButton);
 
+  // Calls can't run in a panel (no WebRTC): when the page tries one, this strip offers the account's
+  // browser window. It sits between the bar and the panel, never over the panel.
+  const callBar = h("div", { class: "msg-callbar", role: "status", hidden: true });
   const stage = h("div", { class: "msg-stage" });
   const snap = h("img", { class: "msg-snap", alt: "", hidden: true });
   const placeholder = h("div", { class: "msg-placeholder" });
   const phoneWrap = h("div", { class: "msg-phonewrap phone-module", hidden: true });
   stage.append(placeholder, phoneWrap, snap);
-  const main = h("div", { class: "msg-main" }, bar, stage);
+  const main = h("div", { class: "msg-main" }, bar, callBar, stage);
   const el = h("section", { class: "messages-module" }, side, main);
 
   const folded = () => remembered(FOLDED_KEY) === "1";
@@ -101,41 +108,47 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
   /** The account the panel should show now, or null when none should. */
   function wanted(): string | null {
     // Settings and the guide hide the section without deactivating it: no area, no panel.
-    if (!visible || covered || !selected || selected === PHONE || selected === napping || !rectNow()) return null;
-    return account(selected)?.mode === "browser" ? null : account(selected) ? selected : null;
+    const a = selected && selected !== PHONE ? account(selected) : undefined;
+    return wantedPanel({ visible, covered, selected, phoneId: PHONE, napping, mode: a ? (a.mode === "browser" ? "browser" : "panel") : null, hasRect: !!rectNow() });
   }
 
   let busy = false;
   let again = false;
   async function apply() {
     const want = wanted();
+    const r = want ? rectNow() : null;
+    const locked = document.body.classList.contains("app-locked");
+    const now = Date.now();
+    const step = nextStep({
+      want: r ? want : null, shownId, rectChanged: !!r && !sameRect(r, lastRect),
+      assertDue: now - lastAssert >= ASSERT_EVERY, visible, covered, locked,
+    });
     try {
-      if (want) {
-        const r = rectNow();
-        if (!r) return;
-        if (shownId !== want) {
-          await msg.show(want, r);
-          shownId = want;
-          lastRect = r;
-        } else if (!sameRect(r, lastRect)) {
-          lastRect = r;
-          await msg.rect(r);
-        }
-        snap.hidden = true;
-      } else if (shownId) {
-        const id = shownId;
+      if (step.kind === "show" || step.kind === "assert") {
+        await msg.show(step.id, r!);
+        shownId = step.id;
+        lastRect = r;
+        lastAssert = Date.now();
+      } else if (step.kind === "rect") {
+        lastRect = r;
+        await msg.rect(r!);
+      } else if (step.kind === "hide") {
         shownId = null;
         lastRect = null;
-        if (visible && covered && !document.body.classList.contains("app-locked")) {
+        if (step.snapshot) {
           // A sheet covers the area: keep a still picture of the panel under it.
-          await msg.snapshot(id).then((url) => {
+          await msg.snapshot(step.id).then((url) => {
             snap.src = url;
             snap.hidden = false;
           }, () => (snap.hidden = true));
         }
         await msg.hide();
       }
+      // The picture only stands in for a panel while a sheet covers the area.
+      if (step.kind !== "hide" && step.kind !== "idle") snap.hidden = true;
+      else if (!snapshotShown({ visible, covered, locked })) snap.hidden = true;
     } catch (err) {
+      lastFailure = Date.now();
       console.warn("Messages:", err);
     }
   }
@@ -161,7 +174,7 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
     for (const child of document.body.children) {
       if (!(child instanceof HTMLElement) || child.id === "app" || child.hidden || ["SCRIPT", "STYLE", "LINK"].includes(child.tagName)) continue;
       const style = getComputedStyle(child);
-      if (style.display === "none" || style.visibility === "hidden") continue;
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) continue;
       const box = child.getBoundingClientRect();
       if (box.width > 0 && box.height > 0 && box.left < area.right && box.right > area.left && box.top < area.bottom && box.bottom > area.top) return true;
     }
@@ -181,6 +194,13 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
   }).observe(el);
   new ResizeObserver(() => shownId && void sync()).observe(stage);
   window.addEventListener("resize", () => shownId && void sync());
+  // Coming back to the window (focus, un-minimising, another workspace) puts the panel up again.
+  const reassert = () => {
+    lastAssert = 0;
+    if (visible) void sync();
+  };
+  window.addEventListener("focus", reassert);
+  document.addEventListener("visibilitychange", () => !document.hidden && reassert());
   // Anything that moves the area without resizing it (a bar that appears) is caught by looking now and then.
   let poll = 0;
 
@@ -299,6 +319,33 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
     void msg.openBrowserWindow(a.id).catch(fail("Couldn't open the browser"));
   }
 
+  const CALL_HINT_KEY = "zazabor.messages.callHint";
+  /** Opens the account's browser window for a call, with a one-time hint about signing in there. */
+  function callInBrowser(a: Account) {
+    openWindow(a);
+    if (remembered(CALL_HINT_KEY) !== "1") {
+      remember(CALL_HINT_KEY, "1");
+      toast("Sign in once in this window; calls work there.", undefined, 8000);
+    }
+  }
+
+  let callBarFor: string | null = null;
+  /** When the strip was dismissed: a page that keeps its notice up doesn't bring it back for a while. */
+  let callBarDismissed = 0;
+  function hideCallBar(dismissed = false) {
+    callBarFor = null;
+    callBar.hidden = true;
+    if (dismissed) callBarDismissed = Date.now();
+  }
+  function showCallBar(a: Account) {
+    callBarFor = a.id;
+    callBar.replaceChildren(
+      h("span", { class: "msg-callbar-text" }, "Calls can't run inside Zazabor."),
+      h("button", { class: "btn primary small", type: "button", onclick: () => { hideCallBar(); callInBrowser(a); } }, "Call in browser window"),
+      h("button", { class: "btn ghost small", type: "button", onclick: () => hideCallBar(true) }, "Dismiss"));
+    callBar.hidden = false;
+  }
+
   function placeholderFor(a: Account | undefined, kind: "empty" | "asleep" | "waiting" | "none") {
     placeholder.className = `msg-placeholder${kind === "waiting" ? " waiting" : ""}`;
     if (kind === "empty") {
@@ -357,6 +404,7 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
     if (launch && account(id)?.mode === "browser") openWindow(account(id)!);
     selected = id;
     if (napping === id) napping = null;
+    if (callBarFor !== id) hideCallBar();
     remember(SELECTED_KEY, id);
     snap.hidden = true;
     draw();
@@ -496,8 +544,16 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
       "separator",
       { label: a.muted ? "Unmute Notifications" : "Mute Notifications", icon: a.muted ? "bell" : "mute", action: () => void patch(a, { muted: !a.muted }) },
       { label: "Hibernate Now", icon: "hourglass", disabled: !a.awake, action: () => hibernate(a) },
+      "separator",
+      ...(([["light", "Light Appearance"], ["dark", "Dark Appearance"], ["system", "Follow System Appearance"]] as const).map(([scheme, label]): MenuItem => ({
+        label,
+        icon: a.appearance === scheme ? "check" : undefined,
+        disabled: a.mode === "browser",
+        action: () => void msg.update(a.id, { appearance: scheme }).then(() => refresh(), fail("Couldn't change the appearance")),
+      }))),
       { label: a.sleepAfter === null ? `Sleep After ${settings()?.defaultSleep ?? 30} Minutes Unused` : "Keep Always On", icon: "clock", action: () => void patch(a, { sleepAfter: a.sleepAfter === null ? settings()?.defaultSleep ?? 30 : null }) },
       "separator",
+      { label: "Call in Browser Window", icon: "phone", action: () => callInBrowser(a) },
       { label: "Open in Browser", icon: "external", action: () => void msg.openExternal(a.id).catch(fail("Couldn't open the browser")) },
       { label: "Rename…", icon: "pencil", action: () => void rename(a) },
       { label: "Open in Browser Instead", icon: "sync", action: () => void switchMode(a, "browser") },
@@ -543,6 +599,10 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
     else if (key === "switcher") void switcher();
   });
   onOpenRequest((id) => account(id) && select(id));
+  void onMsg("msg-call-browser", ({ id }) => {
+    const a = account(id);
+    if (a && a.mode !== "browser" && id === selected && visible && Date.now() - callBarDismissed > 120_000) showCallBar(a);
+  });
 
   // The same keys when the page itself has the focus. Ctrl+1…9 would switch sections in the rail, so
   // this listener comes first, and only while Messages shows with nothing covering it.
@@ -569,6 +629,8 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
     el,
     activate() {
       visible = true;
+      // Toasts go in the account bar while Messages shows: never over the chat (see setToastAnchor).
+      setToastAnchor(bar);
       covered = computeCovered();
       const asked = takePendingOpen();
       if (asked && account(asked)) {
@@ -580,13 +642,18 @@ export const createMessagesModule: ModuleFactory = (shell): AppModule => {
       });
       draw();
       window.clearInterval(poll);
+      // The safety net: whatever happened (a failed show, a missed event, a sheet that closed
+      // without a trace), the wanted panel is brought back within a second or two, and told again
+      // every couple of seconds. Nothing is sent while the page and Rust already agree.
       poll = window.setInterval(() => {
         watchCover();
-        if (shownId) void sync();
+        const due = pollDue({ want: wanted(), shownId, now: Date.now(), lastAssert, lastFailure });
+        if (due !== "none") void sync();
       }, 250);
     },
     deactivate() {
       visible = false;
+      setToastAnchor(null);
       window.clearInterval(poll);
       void sync();
     },

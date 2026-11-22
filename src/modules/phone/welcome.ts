@@ -24,6 +24,8 @@ export function renderWelcome(el: HTMLElement, shell: ShellContext, state: Phone
 
   const getApp = h("button", { class: "btn small", type: "button" }, icon("external", 14), "Get Zazabor Link");
   getApp.addEventListener("click", () => shell.openExternally(LINK_APP_URL));
+  const scan = h("button", { class: "btn small", type: "button" }, icon("phone", 14), "Show QR Code");
+  scan.addEventListener("click", () => shell.openSettings("phone-apps"));
   const copy = h("button", { class: "btn small ghost", type: "button" }, icon("copy", 14), "Copy Link");
   copy.addEventListener("click", () => void navigator.clipboard.writeText(LINK_APP_URL).then(() => showToast("Link copied", undefined, 2000), () => undefined));
 
@@ -72,8 +74,8 @@ export function renderWelcome(el: HTMLElement, shell: ShellContext, state: Phone
       h("p", { class: "pl-welcome-lead" }, "Read and send texts, make and take calls, see your photos and notifications, move files both ways, and show your phone's screen, all from here."),
       failed,
       h("ol", { class: "pl-steps card" },
-        step(1, false, "Install Zazabor Link on your Android phone", "It comes with every Zazabor Home release. Open this page on the phone and install the APK.",
-          h("div", { class: "pl-step-row" }, getApp, copy)),
+        step(1, false, "Install Zazabor Link on your Android phone", "It comes with every Zazabor Home release. Scan the QR code with the phone's camera, or open the link on the phone, and install the APK.",
+          h("div", { class: "pl-step-row" }, scan, getApp, copy)),
         step(2, on, "Turn on Phone Link", on ? "On. Phones on the same Wi-Fi can find this PC." : "This PC then shows up for Zazabor Link on the same Wi-Fi.",
           on || error ? null : h("div", { class: "pl-step-row" }, turnOn)),
         step(3, false, "Pick this PC on the phone", "In Zazabor Link, tap Phone Link, pick this PC, and check that both screens show the same six digits.", waiting)),

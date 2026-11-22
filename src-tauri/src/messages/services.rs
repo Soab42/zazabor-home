@@ -87,6 +87,15 @@ pub fn stays_inside(service: &str, home: &str, url: &str) -> bool {
     host_of(home).is_some_and(|h| host_in(&host, &h))
 }
 
+/// Where the account's browser window goes: the address the panel shows now when it is a secure
+/// page of the service itself (the open chat or channel), otherwise the account's own address.
+pub fn browser_target(service: &str, home: &str, current: Option<&str>) -> String {
+    match current {
+        Some(url) if url.starts_with("https://") && stays_inside(service, home, url) => url.to_string(),
+        _ => home.to_string(),
+    }
+}
+
 /// Whether `url` is a call or meeting page of the service (opened in the system browser).
 pub fn is_call(service: &str, url: &str) -> bool {
     let Ok(parsed) = tauri::Url::parse(url) else { return false };
@@ -132,6 +141,17 @@ fn inner_count(title: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_browser_window_opens_the_current_chat_on_the_service() {
+        let home = "https://web.whatsapp.com";
+        assert_eq!(browser_target("whatsapp", home, Some("https://web.whatsapp.com/send?phone=1")), "https://web.whatsapp.com/send?phone=1");
+        assert_eq!(browser_target("whatsapp", home, Some("https://evil.example/x")), home);
+        assert_eq!(browser_target("whatsapp", home, Some("http://web.whatsapp.com/")), home);
+        assert_eq!(browser_target("whatsapp", home, Some("file:///etc/passwd")), home);
+        assert_eq!(browser_target("whatsapp", home, None), home);
+        assert_eq!(browser_target("custom", "https://chat.example.com/", Some("https://chat.example.com/room/4")), "https://chat.example.com/room/4");
+    }
 
     #[test]
     fn titles_per_service() {

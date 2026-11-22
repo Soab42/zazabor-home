@@ -9,6 +9,7 @@ import { meetCategory } from "../modules/meet/settings";
 import { messagesCategory } from "../modules/messages/settings";
 import { phoneCategory } from "../modules/phone/settings";
 import { tvCategory } from "../modules/tv/settings";
+import { phoneAppsCategory } from "./phone-apps";
 import { photoCategory } from "../modules/studio/photo/settings-page";
 import { pdfCategory } from "../modules/office/pdf/settings";
 import { aiCategory } from "../shared/ai/settings";
@@ -100,6 +101,32 @@ function sliderRow(label: string, min: number, max: number, step: number, get: (
 }
 
 const textValue = (text: string) => h("span", { class: "st-value" }, text);
+
+/** Who made Zazabor Home (About). */
+const CREATOR = "Soab Mahmud Syfuddhin";
+const WEBSITE = "https://soab42.github.io/zazabor-content/";
+const GITHUB = "https://github.com/Soab42/zazabor-home";
+
+/** A row that opens a web page in the default browser. */
+function linkRow(label: string, url: string, shown: string): SettingsRow {
+  const button = h("button", { class: "btn small", type: "button", title: url }, shown);
+  button.addEventListener("click", () => void invoke("fs_open_default", { path: url }).catch(() => undefined));
+  return plainRow(label, button);
+}
+
+/** About → Links: the landing page, the source on GitHub, and where the phone apps are. */
+function linksGroup(): SettingsGroup {
+  return {
+    title: "Links",
+    rows: [
+      linkRow("Website", WEBSITE, "soab42.github.io/zazabor-content"),
+      linkRow("Source code", GITHUB, "GitHub: Soab42/zazabor-home"),
+      linkRow("Releases", `${GITHUB}/releases`, "All versions"),
+      plainRow("Phone apps", textValue("Settings → Phone apps has QR codes to install them")),
+      plainRow("Created by", textValue(CREATOR)),
+    ],
+  };
+}
 
 /** Shows an error from the backend in a value field. */
 function alertText(el: HTMLElement, err: unknown) {
@@ -322,6 +349,7 @@ export class Settings {
       this.privacyCategory(),
       aiCategory(),
       alertsCategory(this.host),
+      phoneAppsCategory(),
       { id: "keyboard", title: "Keyboard", icon: "terminal", section: "App", groups: keyboardGroups(config) },
       {
         id: "files", title: "Files", icon: "folder", section: "Modules",
@@ -524,8 +552,9 @@ export class Settings {
         h("img", { src: "/logo.svg", alt: "", width: 64, height: 64 }),
         h("h2", null, "Zazabor Home"),
         h("p", { class: "muted" }, "Files, photos and video in one calm place."),
-        h("div", { class: "st-about-version" }, "Version ", this.version)),
-      groups: [this.helpGroup(), feedbackGroup(), ...updateGroups(this.host.config, () => this.host.configChanged()), {
+        h("div", { class: "st-about-version" }, "Version ", this.version),
+        h("div", { class: "st-about-creator" }, "Created by ", h("strong", null, CREATOR))),
+      groups: [this.helpGroup(), linksGroup(), feedbackGroup(), ...updateGroups(this.host.config, () => this.host.configChanged()), {
         title: "Credits",
         rows: [
           plainRow("Built with", textValue("Tauri 2, TypeScript and WebGL")),
