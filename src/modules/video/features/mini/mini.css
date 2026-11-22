@@ -104,7 +104,8 @@
 
 /* Resize grips: the mini window has no frame, so its edges and corners are grab zones (8 px; the
    corners a little bigger). Invisible; the cursor shows the direction. */
-.vp-mini-grip { position: absolute; z-index: 5; }
+/* pointer-events: the overlay passes clicks through (none), so each grip must take them itself. */
+.vp-mini-grip { position: absolute; z-index: 5; pointer-events: auto; }
 .vp-mini-grip.n { top: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
 .vp-mini-grip.e { right: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
 .vp-mini-grip.w { left: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
