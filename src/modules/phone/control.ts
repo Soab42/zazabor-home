@@ -166,7 +166,9 @@ export function mountPhoneControl(stage: HTMLElement, tools: HTMLElement, phoneI
     let wheelDy = 0;
     let wheelTimer = 0;
     overlay.addEventListener("wheel", (e) => {
+      // The wheel scrolls the phone; the player's own wheel (its volume) stays out of it.
       e.preventDefault();
+      e.stopPropagation();
       const f = at(e);
       if (!f) return;
       wheelDx += e.deltaX;

@@ -48,7 +48,8 @@ const RAIL: { section: LibSection; icon: IconName; label: string }[] = [
  */
 function onStageControl(e: Event): boolean {
   const target = e.target instanceof Element ? e.target : null;
-  return !!target?.closest("button, a, input, select, textarea, [role='slider'], .vq-prompt, .pp-stage-timeline, .mt-chip");
+  // .pc-overlay: the layer that controls a mirrored phone; its clicks, wheel and double clicks are the phone's
+  return !!target?.closest("button, a, input, select, textarea, [role='slider'], .vq-prompt, .pp-stage-timeline, .mt-chip, .pc-overlay");
 }
 
 /** The Video module: a glass-styled player around the libVLC backend (see docs/design/vlc/PLAYER.md). */
