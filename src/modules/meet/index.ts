@@ -73,7 +73,7 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     }
   }
 
-  const infoOf = (r: Recording): AiInfo => ai.get(r.id) ?? { id: r.id, tracks: 0, state: "none", stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [] };
+  const infoOf = (r: Recording): AiInfo => ai.get(r.id) ?? { id: r.id, tracks: 0, state: "none", stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [], sendMinutes: 0, cloud: "" };
 
   function openPage(r: Recording) {
     closePage();
@@ -90,7 +90,7 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
   /** A job moved on: the card and an open page follow it without a full reload. */
   function aiChanged(e: { id?: string; state?: AiInfo["state"]; stage?: string; progress?: number; message?: string }) {
     if (!e.id) return;
-    const prev = ai.get(e.id) ?? { id: e.id, tracks: 0, state: "none" as const, stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [] };
+    const prev = ai.get(e.id) ?? { id: e.id, tracks: 0, state: "none" as const, stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [], sendMinutes: 0, cloud: "" };
     const next: AiInfo = { ...prev, state: e.state ?? prev.state, stage: e.stage ?? prev.stage, progress: e.progress ?? prev.progress, message: e.message ?? prev.message };
     ai.set(e.id, next);
     if (page?.id === e.id) page.page.update(next);
