@@ -1,7 +1,7 @@
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import { tvApi, type Filter, type Item, type Page } from "./api";
-import { card, notice, type TvCtx } from "./parts";
+import { card, notice, type TvCtx, sideScroll } from "./parts";
 
 /** The quality chips say 4K where the folders say 2160p. */
 export const qualityLabel = (q: string) => (q === "2160p" ? "4K" : q);
@@ -86,6 +86,7 @@ export class BrowsePage {
       head.append(h("div", { class: "tv-page-tools" }, h("label", { class: "tv-search glass" }, icon("search", 18), this.input)));
     }
     this.drawSort();
+    sideScroll(this.chips);
     this.el = h("div", { class: "tv-browse" }, head, options.extra, h("div", { class: "tv-filters" }, this.chips, this.sortBar), this.grid, this.sentinel);
     this.io = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) void this.more();
@@ -124,7 +125,7 @@ export class BrowsePage {
       return b;
     };
     const out: HTMLElement[] = [chip("All years", !this.filter.year, () => this.set({ year: undefined }))];
-    for (const [year] of this.years.slice(0, 18)) out.push(chip(String(year), this.filter.year === year, () => this.set({ year })));
+    for (const [year] of this.years) out.push(chip(String(year), this.filter.year === year, () => this.set({ year })));
     if (this.qualities.length > 1) {
       out.push(h("span", { class: "tv-chip-gap" }));
       for (const [quality] of this.qualities.slice(0, 4)) out.push(chip(qualityLabel(quality), this.filter.quality === quality, () => this.set({ quality: this.filter.quality === quality ? undefined : quality })));

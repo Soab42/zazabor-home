@@ -60,9 +60,9 @@ export class Detail {
       Object.assign(this.item, next);
       if (next.poster && bg.dataset.src !== next.poster) {
         bg.dataset.src = next.poster;
+        bg.onload = () => art.classList.add("tv-has-img");
+        poster.onload = () => posterBox.classList.add("tv-has-img");
         bg.src = poster.src = picUrl(next.poster);
-        art.classList.add("tv-has-img");
-        posterBox.classList.add("tv-has-img");
       }
       this.drawFacts();
     };

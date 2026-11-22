@@ -8,7 +8,7 @@
   --on: 255, 255, 255;
   position: relative; height: 100%; min-height: 0; overflow: hidden; color: var(--text);
 }
-.tvx button { font: inherit; color: inherit; }
+:where(.tvx) button { font: inherit; color: inherit; }
 .tvx [hidden] { display: none !important; }
 
 .tv-scroll { position: absolute; inset: 0; overflow-x: hidden; overflow-y: auto; scroll-padding-top: 96px; scroll-padding-bottom: 60px; }
@@ -236,6 +236,10 @@
 .tv-filters { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-3); }
 .tv-chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 8px; scrollbar-width: none; min-width: 0; }
 .tv-chips::-webkit-scrollbar { display: none; }
+.tv-chips { cursor: grab; overscroll-behavior-x: contain; }
+.tv-chips.more-right { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent); }
+.tv-chips.more-left { -webkit-mask-image: linear-gradient(90deg, transparent, #000 48px); mask-image: linear-gradient(90deg, transparent, #000 48px); }
+.tv-chips.more-left.more-right { -webkit-mask-image: linear-gradient(90deg, transparent, #000 48px, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(90deg, transparent, #000 48px, #000 calc(100% - 48px), transparent); }
 .tv-chip { flex: none; height: 30px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--control); color: var(--text-2); box-shadow: inset 0 0 0 0.5px var(--line); font-size: 12.5px; font-weight: 620; cursor: pointer; transition: background var(--dur-fast), transform var(--dur-fast) var(--ease-spring); }
 .tv-chip:hover { background: var(--control-hover); }
 .tv-chip.on { background: var(--text); color: var(--bg); box-shadow: none; }
@@ -469,3 +473,43 @@
 .tv-row.dragging { scroll-snap-type: none; cursor: grabbing; }
 .tv-row.dragging .tv-item { pointer-events: none; }
 .tv-row.dragging .tv-card { transition: none; transform: none; }
+
+/* ---- round buttons over pictures, card hover, pictures arriving -------------------------------
+   Buttons that sit on posters and artwork are always white on a near-solid dark disc (whatever
+   the theme), with a hairline edge so they read on dark and light pictures alike. */
+.tv-hero-arrow, .tv-arrow, .tv-star, .tv-quick-btn, .tv-close {
+  color: #fff; background: rgba(16, 16, 22, 0.78);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.3), 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.tv-hero-arrow:hover, .tv-arrow:hover, .tv-star:hover, .tv-quick-btn:hover, .tv-close:hover { background: rgba(40, 40, 50, 0.9); }
+.tv-star.on { color: var(--accent); }
+.tv-quick-btn.on { background: rgba(255, 255, 255, 0.96); color: #e0245e; }
+
+/* No flicker while a card lifts: WebKit re-rasterised the scaled, rounded, clipped poster on every
+   frame. The cards of the row under the pointer get their own layer up front, and the poster's
+   clip is drawn once on that layer. */
+.tv-row:hover .tv-card, .tv-card:focus-visible { will-change: transform; }
+.tv-card { -webkit-backface-visibility: hidden; backface-visibility: hidden; isolation: isolate; }
+.tv-poster { transform: translateZ(0); -webkit-mask-image: -webkit-radial-gradient(white, black); }
+
+/* A poster still on its way: the card's colour with a soft light sweeping across, no title flashing
+   up and away. If nothing has come after a few seconds the title shows after all. */
+.tv-poster.tv-loading::after {
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; transform: translateX(-100%);
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.12) 50%, transparent 80%);
+  animation: tv-sweep 1.4s ease-in-out 8;
+}
+.tv-poster.tv-loading > .tv-fallback > * { animation: tv-late-title 0.4s 4s both; }
+@keyframes tv-late-title { from { opacity: 0; } to { opacity: 1; } }
+
+/* Pictures arrive gently: a fade with a slight settle and the blur clearing. */
+.tv-img { transform: scale(1.04); filter: blur(8px); transition: opacity 0.55s var(--ease-out), transform 0.75s var(--ease-out), filter 0.55s var(--ease-out); }
+.tv-has-img > .tv-img { transform: none; filter: none; }
+.tv-has-img > .tv-fallback { transition: opacity 0.55s var(--ease-out); }
+.tv-detail-poster, .tv-chan-logo { transform: scale(1.04); transition: opacity 0.55s var(--ease-out), transform 0.75s var(--ease-out); }
+.tv-has-img > .tv-detail-poster, .tv-chan-face.tv-has-img .tv-chan-logo { transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-poster.tv-loading::after { animation: none; }
+  .tv-img, .tv-detail-poster, .tv-chan-logo { transform: none; filter: none; transition: opacity 0.3s; }
+}

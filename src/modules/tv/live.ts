@@ -1,7 +1,7 @@
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import { errorText, FREE_BD_PLAYLIST, newId, onTv, picUrl, tvApi, type Channel } from "./api";
-import { hued, notice, type TvCtx } from "./parts";
+import { hued, notice, type TvCtx, sideScroll } from "./parts";
 
 const initials = (name: string) => name.replace(/\(.*?\)/g, "").trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("");
 
@@ -30,6 +30,7 @@ export class LivePage {
     });
     const refresh = h("button", { class: "tv-pill glass", type: "button", "data-tv-focus": "", title: "Read the playlists again" }, icon("refresh", 16), "Refresh");
     refresh.addEventListener("click", () => void this.refreshLists());
+    sideScroll(this.chips);
     this.el = h("div", { class: "tv-browse tv-live" },
       h("header", { class: "tv-page-head" }, h("div", { class: "tv-page-title" }, h("h1", null, "Live TV"), h("p", null, "Channels from your own playlists"), this.count), h("div", { class: "tv-page-tools" }, h("label", { class: "tv-search glass" }, icon("search", 18), input), refresh)),
       this.chips, this.body);
@@ -138,10 +139,8 @@ export class LivePage {
     const logo = h("img", { class: "tv-chan-logo", alt: "", draggable: false });
     const mark = hued(h("span", { class: "tv-chan-initials" }, initials(ch.name)), ch.name);
     const face = h("span", { class: "tv-chan-face" }, mark, logo);
-    if (ch.logo) {
-      logo.src = picUrl(ch.logo);
-      face.classList.add("tv-has-img");
-    }
+    logo.onload = () => face.classList.add("tv-has-img");
+    if (ch.logo) logo.src = picUrl(ch.logo);
     const star = h("button", { class: `tv-star${ch.fav ? " on" : ""}`, type: "button", tabindex: -1, title: ch.fav ? "Remove from favourites" : "Add to favourites", "aria-label": "Favourite", "aria-pressed": String(ch.fav) }, icon(ch.fav ? "starFilled" : "star", 15));
     star.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -185,7 +184,6 @@ export class LivePage {
         for (const tile of this.el.querySelectorAll<HTMLElement>(`[data-id="${ch.id}"]`)) {
           const img = tile.querySelector<HTMLImageElement>(".tv-chan-logo");
           if (img) img.src = picUrl(path);
-          tile.querySelector(".tv-chan-face")?.classList.add("tv-has-img");
         }
       }, () => undefined).finally(() => {
         this.logoActive--;

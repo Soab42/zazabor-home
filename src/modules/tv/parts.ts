@@ -152,11 +152,17 @@ export function card(item: Item, ctx: TvCtx, options: CardOptions = {}): HTMLEle
   const img = h("img", { class: "tv-img", alt: "", draggable: false, decoding: "async", loading: "lazy" });
   img.sizes = "(min-width: 1700px) 240px, 190px";
   const fallback = hued(h("span", { class: "tv-fallback" }, h("span", { class: "tv-fallback-title" }, item.title), item.year ? h("span", { class: "tv-fallback-year" }, String(item.year)) : null), item.title);
-  const poster = h("div", { class: "tv-poster" }, fallback, img);
+  const poster = h("div", { class: `tv-poster${item.noPoster ? "" : " tv-loading"}` }, fallback, img);
+  const settle = () => poster.classList.remove("tv-loading");
   const apply = (next: Item) => {
+    if (next.noPoster && !next.poster) settle();
     if (next.poster && img.dataset.src !== next.poster) {
       img.dataset.src = next.poster;
-      img.onload = () => poster.classList.add("tv-has-img");
+      img.onload = () => {
+        poster.classList.add("tv-has-img");
+        settle();
+      };
+      img.onerror = settle;
       // the 480 px copy is sharp enough for a card even on a HiDPI screen; the original backs it up for wide cards
       if (next.posterThumb) img.srcset = `${picUrl(next.posterThumb)} 480w, ${picUrl(next.poster)} 800w`;
       img.src = picUrl(next.posterThumb ?? next.poster);
@@ -297,6 +303,58 @@ export interface ShelfOptions extends CardOptions {
   onMore?: () => void;
   moreLabel?: string;
   subtitle?: string;
+}
+
+/**
+ * Lets a row of chips that is wider than the page be scrolled with a mouse: the plain wheel moves it
+ * sideways (only while it can still move that way, so the page scrolls on at the ends), and it can be
+ * dragged. Edges fade where more is hidden. Touch scrolls it natively.
+ */
+export function sideScroll(row: HTMLElement): void {
+  const sync = () => {
+    row.classList.toggle("more-left", row.scrollLeft > 4);
+    row.classList.toggle("more-right", row.scrollLeft + row.clientWidth < row.scrollWidth - 4);
+  };
+  row.addEventListener("scroll", sync, { passive: true });
+  new ResizeObserver(sync).observe(row);
+  new MutationObserver(() => requestAnimationFrame(sync)).observe(row, { childList: true });
+  row.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || row.scrollWidth <= row.clientWidth + 1) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    const step = e.deltaMode === 1 ? delta * 32 : delta;
+    const canMove = step < 0 ? row.scrollLeft > 0 : row.scrollLeft + row.clientWidth < row.scrollWidth - 1;
+    if (!step || !canMove) return;
+    e.preventDefault();
+    row.scrollLeft += step;
+  }, { passive: false });
+  let startX = 0, startLeft = 0, moved = false, down = false;
+  const drag = (e: PointerEvent) => {
+    if (!down) return;
+    if (!moved && Math.abs(e.clientX - startX) > 6) moved = true;
+    if (moved) row.scrollLeft = startLeft - (e.clientX - startX);
+  };
+  const drop = () => {
+    down = false;
+    window.removeEventListener("pointermove", drag);
+    window.removeEventListener("pointerup", drop);
+  };
+  row.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
+    down = true;
+    moved = false;
+    startX = e.clientX;
+    startLeft = row.scrollLeft;
+    window.addEventListener("pointermove", drag);
+    window.addEventListener("pointerup", drop);
+  });
+  // a drag that ends on a chip doesn't pick it
+  row.addEventListener("click", (e) => {
+    if (!moved) return;
+    e.stopPropagation();
+    e.preventDefault();
+    moved = false;
+  }, true);
+  requestAnimationFrame(sync);
 }
 
 /** A titled row of cards that scrolls sideways: with arrow buttons, the wheel with Shift, or a drag. */
