@@ -782,7 +782,7 @@
   // The host's recording: a canvas draws the grid, WebAudio mixes the voices, MediaRecorder
   // makes 2 s chunks that are uploaded in order.
   // ====================================================================
-  const rec = { recorder: null, id: '', seq: 0, queue: [], sending: false, canvas: null, ctx: null, worker: null, timer: 0, audioCtx: null, dest: null, sources: new Map(), started: 0, stopping: false, failed: false };
+  const rec = { recorder: null, id: '', seq: 0, queue: [], sending: false, canvas: null, ctx: null, worker: null, timer: 0, audioCtx: null, dest: null, sources: new Map(), started: 0, stopping: false, failed: false, registered: new Set(), tracks: new Map(), ending: [] };
   const RW = 1280, RH = 720;
 
   function recMime() {
@@ -809,6 +809,87 @@
         rec.sources.set(k, { node, stream: s, track: s.getAudioTracks()[0] });
       } catch (_) { /* no audio */ }
     }
+    syncTrackRecorders(want);
+  }
+
+  // One audio-only track per participant (Opus, 2 s chunks), so the transcript knows who spoke.
+  // The host's own microphone is one too. A track that changes (another microphone) starts a new file.
+  function trackMime() {
+    for (const m of ['audio/webm;codecs=opus', 'audio/webm']) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+    }
+    return '';
+  }
+
+  function nameOf(key) {
+    if (key === 'self') return myName || 'Host';
+    const p = peers.get(key);
+    return (p && p.info && p.info.name) || 'Guest';
+  }
+
+  function syncTrackRecorders(want) {
+    if (!rec.recorder || rec.stopping) return;
+    const mime = trackMime();
+    if (!mime) return;
+    for (const [k, t] of rec.tracks) {
+      const w = want.get(k);
+      const cur = w && w.getAudioTracks()[0];
+      if (!cur || cur.id !== t.trackId) stopTrack(k);
+    }
+    for (const [k, stream] of want) {
+      const audio = stream.getAudioTracks()[0];
+      if (!audio || (rec.tracks.has(k) && rec.tracks.get(k).trackId === audio.id)) continue;
+      const t = { recId: rec.id, id: 'a' + Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''), trackId: audio.id, name: nameOf(k), offset: Math.max(0, Date.now() - rec.started), seq: 0, queue: [], recorder: null, stopped: false };
+      try {
+        const r = new MediaRecorder(new MediaStream([audio]), { mimeType: mime, audioBitsPerSecond: 32000 });
+        r.ondataavailable = (e) => { if (e.data && e.data.size) { t.queue.push({ seq: t.seq++, blob: e.data }); pumpTrack(t); } };
+        r.onstop = () => { t.stopped = true; };
+        t.recorder = r;
+        rec.tracks.set(k, t);
+        r.start(2000);
+      } catch (_) { /* this track isn't recorded */ }
+    }
+  }
+
+  function stopTrack(k) {
+    const t = rec.tracks.get(k);
+    if (!t) return;
+    rec.tracks.delete(k);
+    rec.ending.push(t);
+    try { t.recorder.stop(); } catch (_) { t.stopped = true; }
+  }
+
+  async function pumpTrack(t) {
+    if (t.sending) return;
+    t.sending = true;
+    let fails = 0, waited = 0;
+    while (t.queue.length) {
+      // Chunks wait until the mixed recording's first piece has been saved.
+      if (!rec.registered.has(t.recId)) { await new Promise((r) => setTimeout(r, 300)); if (++waited > 100) { t.queue.length = 0; break; } continue; }
+      const c = t.queue[0];
+      try {
+        const res = await fetch('/rec/' + code + '/track?host=' + encodeURIComponent(hostToken) + '&rec=' + t.recId + '&track=' + t.id + '&seq=' + c.seq + '&name=' + encodeURIComponent(t.name) + '&offset=' + Math.round(t.offset), { method: 'POST', body: c.blob });
+        if (res.ok) { t.queue.shift(); fails = 0; continue; }
+        if (res.status === 409 || res.status === 403) { t.queue.shift(); continue; }
+        throw new Error(String(res.status));
+      } catch (_) {
+        fails++;
+        if (fails > 20) { t.queue.length = 0; break; }
+        await new Promise((r) => setTimeout(r, Math.min(1000 * fails, 5000)));
+      }
+    }
+    t.sending = false;
+  }
+
+  // After the recorders have stopped: wait for every queue to empty, then tell the server.
+  async function finishRecording(id) {
+    const all = () => [...rec.tracks.values(), ...rec.ending];
+    for (let i = 0; i < 200; i++) {
+      const busy = rec.sending || rec.queue.length || all().some((t) => !t.stopped || t.queue.length || t.sending);
+      if (!busy) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    try { await fetch('/rec/' + code + '/finish?host=' + encodeURIComponent(hostToken) + '&rec=' + id, { method: 'POST' }); } catch (_) { /* the server notices a quiet recording by itself */ }
   }
 
   function roundRect(c, x, y, w, h, r) {
@@ -908,16 +989,22 @@
     drawFrame();
     const stream = new MediaStream([...rec.canvas.captureStream(30).getVideoTracks(), ...rec.dest.stream.getAudioTracks()]);
     rec.id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
-    rec.seq = 0; rec.queue = [];
+    rec.seq = 0; rec.queue = []; rec.tracks.clear(); rec.ending = [];
     let r;
     try { r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2500000, audioBitsPerSecond: 128000 }); }
     catch (e) { toast('The recording couldn’t start.'); return; }
     rec.recorder = r;
     r.ondataavailable = (e) => { if (e.data && e.data.size) { rec.queue.push({ seq: rec.seq++, blob: e.data, id: rec.id }); pump(); } };
-    r.onstop = () => { rec.recorder = null; stopTicker(); };
+    const id = rec.id;
+    r.onstop = () => {
+      rec.recorder = null; stopTicker();
+      for (const k of [...rec.tracks.keys()]) stopTrack(k);
+      finishRecording(id);
+    };
     startTicker();
     send({ t: 'rec', on: true });
     r.start(2000);
+    refreshRecAudio();
   }
 
   function startTicker() {
@@ -941,7 +1028,7 @@
       const c = rec.queue[0];
       try {
         const res = await fetch('/rec/' + code + '?host=' + encodeURIComponent(hostToken) + '&rec=' + c.id + '&seq=' + c.seq, { method: 'POST', body: c.blob });
-        if (res.ok) { rec.queue.shift(); fails = 0; continue; }
+        if (res.ok) { rec.queue.shift(); fails = 0; rec.registered.add(c.id); continue; }
         if (res.status === 409 || res.status === 403 || res.status === 404) { rec.queue.shift(); if (!rec.failed) { rec.failed = true; toast('The recording lost a piece.'); } continue; }
         throw new Error(String(res.status));
       } catch (_) {

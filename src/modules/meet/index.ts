@@ -7,9 +7,10 @@ import "../files/ops/ops.css";
 import { confirmSheet } from "../files/ops/sheets";
 import { showToast } from "../files/ops/toast";
 import type { Account } from "../mail/api";
-import { clockText, codeText, dayText, durationText, errorText, isPast, meetApi, onMeet, whenText, type MeetState, type Meeting, type Recording } from "./api";
+import { clockText, codeText, dayText, durationText, errorText, isPast, meetApi, onMeet, whenText, type AiInfo, type MeetState, type Meeting, type Recording } from "./api";
 import { startMeetService } from "./global";
 import "./meet.css";
+import { createMeetingPage, type MeetingPage } from "./meeting";
 import { callSheet, scheduleSheet } from "./sheets";
 
 type View = "upcoming" | "past" | "recordings";
@@ -34,8 +35,13 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
   let loaded = false;
   let meetings: Meeting[] = [];
   let recordings: Recording[] = [];
+  /** The transcript job of every recording, by recording id. */
+  let ai = new Map<string, AiInfo>();
+  /** The open meeting page (Recordings → a recording's Transcript). */
+  let page: { id: string; page: MeetingPage } | null = null;
   let tick = 0;
   let unlisten: Promise<() => void> | null = null;
+  let unlistenAi: Promise<() => void> | null = null;
 
   const toast = showToast;
   const fail = (what: string) => (err: unknown) => toast(`${what}: ${errorText(err)}`);
@@ -51,7 +57,9 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     }
     loading = true;
     try {
-      [state, meetings, recordings] = await Promise.all([meetApi.state(), meetApi.list(), meetApi.recordings()]);
+      let infos: AiInfo[] = [];
+      [state, meetings, recordings, infos] = await Promise.all([meetApi.state(), meetApi.list(), meetApi.recordings(), meetApi.aiStatus().catch(() => [])]);
+      ai = new Map(infos.map((i) => [i.id, i]));
       stateError = null;
     } catch (err) {
       stateError = errorText(err);
@@ -63,6 +71,32 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
       again = false;
       void reload();
     }
+  }
+
+  const infoOf = (r: Recording): AiInfo => ai.get(r.id) ?? { id: r.id, tracks: 0, state: "none", stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [] };
+
+  function openPage(r: Recording) {
+    closePage();
+    page = { id: r.id, page: createMeetingPage(shell, r, infoOf(r), () => { closePage(); draw(); }) };
+    view = "recordings";
+    draw();
+  }
+
+  function closePage() {
+    page?.page.dispose();
+    page = null;
+  }
+
+  /** A job moved on: the card and an open page follow it without a full reload. */
+  function aiChanged(e: { id?: string; state?: AiInfo["state"]; stage?: string; progress?: number; message?: string }) {
+    if (!e.id) return;
+    const prev = ai.get(e.id) ?? { id: e.id, tracks: 0, state: "none" as const, stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [] };
+    const next: AiInfo = { ...prev, state: e.state ?? prev.state, stage: e.stage ?? prev.stage, progress: e.progress ?? prev.progress, message: e.message ?? prev.message };
+    ai.set(e.id, next);
+    if (page?.id === e.id) page.page.update(next);
+    else if (visible && view === "recordings" && !page) draw();
+    // A job that ended changes what's on disk: fetch the real state.
+    if (!e.state) void reload();
   }
 
   const accounts = (): Promise<Account[]> => meetApi.mailAccounts().catch(() => []);
@@ -216,6 +250,7 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     const b = h("button", { class: "mtg-nav-item", type: "button", title: v.label }, icon(v.glyph, 17), h("span", { class: "mtg-nav-label" }, v.label), count);
     b.addEventListener("click", () => {
       view = v.id;
+      closePage();
       draw();
     });
     nav.append(b);
@@ -306,15 +341,32 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
       actions);
   }
 
+  function aiLine(i: AiInfo) {
+    if (i.state === "running" || i.state === "queued") {
+      return h("div", { class: "mtg-ai running" }, h("span", { class: "mtg-ai-text" }, i.message || "Working…"), h("div", { class: "mtg-bar" }, h("div", { class: "mtg-bar-fill", style: { width: `${Math.round(i.progress * 100)}%` } })));
+    }
+    const text = i.state === "needs-models" ? "Needs the speech models: open to download them"
+      : i.state === "error" ? `Transcript failed: ${i.message}`
+      : i.state === "off" ? "Transcripts are off"
+      : i.hasNotes ? "Transcript and notes ready"
+      : i.hasTranscript ? "Transcript ready"
+      : i.state === "cancelled" ? "Transcript stopped"
+      : "";
+    return text ? h("div", { class: `mtg-ai ${i.state === "error" ? "bad" : i.hasTranscript ? "done" : ""}` }, h("span", { class: "mtg-ai-text" }, text)) : null;
+  }
+
   function recordingCard(r: Recording) {
     const live = r.endedAt === null;
     const length = r.endedAt ? durationText((r.endedAt - r.startedAt) / 1000) : null;
+    const info = infoOf(r);
     const play = button("Play", "play", "primary", () => shell.open({ kind: "video", path: r.path }));
     play.disabled = live;
+    const talk = button(info.hasTranscript ? "Transcript" : "Transcribe", "note", "", () => openPage(r), "Transcript, subtitles and notes");
+    talk.disabled = live;
     return h("article", { class: "mtg-rec" },
       h("div", { class: "mtg-thumb", onclick: () => !live && shell.open({ kind: "video", path: r.path }) }, icon("film", 30), live ? h("span", { class: "mtg-pill rec" }, h("span", { class: "mtg-dot" }), "REC") : length ? h("span", { class: "mtg-length" }, length) : null),
-      h("div", { class: "mtg-rec-text" }, h("h3", { title: r.title }, r.title), h("p", null, `${dayText(r.startedAt)} ${clockText(r.startedAt)}${length ? ` · ${length}` : ""} · ${formatBytes(r.bytes)}`)),
-      h("div", { class: "mtg-card-actions" }, play,
+      h("div", { class: "mtg-rec-text" }, h("h3", { title: r.title }, r.title), h("p", null, `${dayText(r.startedAt)} ${clockText(r.startedAt)}${length ? ` · ${length}` : ""} · ${formatBytes(r.bytes)}`), aiLine(info)),
+      h("div", { class: "mtg-card-actions" }, play, talk,
         button("Show in Files", "folder", "", () => shell.open({ kind: "folder", path: dirname(r.path) })),
         h("button", { class: "icon-btn mtg-more", type: "button", title: "Delete", "aria-label": "Delete recording", onclick: () => void deleteRecording(r) }, icon("trash", 16))));
   }
@@ -337,6 +389,16 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
       return body.replaceChildren(empty("video", "Meet isn't available", stateError, button("Try Again", "refresh", "", () => void reload())));
     }
     const meetNowButton = h("button", { class: "btn primary", type: "button", onclick: () => void meetNow() }, icon("video", 15), "Meet now");
+    if (page) {
+      const r = recordings.find((x) => x.id === page!.id);
+      if (!r) closePage();
+      else {
+        heading.textContent = "Recordings";
+        if (body.firstElementChild !== page.page.el) body.replaceChildren(page.page.el);
+        page.page.update(infoOf(r));
+        return;
+      }
+    }
     if (view === "recordings") {
       body.replaceChildren(recordings.length
         ? h("div", { class: "mtg-grid" }, ...[...recordings].sort((a, b) => b.startedAt - a.startedAt).map(recordingCard))
@@ -362,6 +424,7 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
       visible = true;
       void reload();
       unlisten ??= onMeet("meet-changed", () => visible && void reload());
+      unlistenAi ??= onMeet("meet-ai", (e) => visible && aiChanged(e));
       window.clearInterval(tick);
       tick = window.setInterval(() => visible && loaded && draw(), 30_000);
     },
@@ -372,7 +435,9 @@ export const createMeetModule: ModuleFactory = (shell): AppModule => {
     handleKey: () => false,
     dispose() {
       window.clearInterval(tick);
+      closePage();
       void unlisten?.then((stop) => stop());
+      void unlistenAi?.then((stop) => stop());
     },
   };
 };

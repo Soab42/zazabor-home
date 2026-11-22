@@ -4,19 +4,19 @@
 //! `.corevideo` projects. Bulk data crosses the bridge raw (`tauri::ipc::Response` and request
 //! bodies), never as JSON arrays.
 
-mod audio;
+pub(crate) mod audio;
 mod captions;
 mod codecs;
 mod export;
 mod frames;
 pub(crate) mod h264;
 pub(crate) mod media;
-mod models;
+pub(crate) mod models;
 mod project;
 mod record;
 mod recover;
 mod relink;
-mod whisper;
+use crate::ai::whisper;
 
 use std::path::Path;
 use tauri::ipc::{InvokeBody, Request, Response};

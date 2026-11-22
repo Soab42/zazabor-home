@@ -2,9 +2,9 @@ import type { Config } from "../config";
 import type { IconName } from "../ui/icons";
 
 /** The features Zazabor is made of; each can be turned off in Settings. */
-export type ModuleId = "files" | "gallery" | "video" | "terminal" | "notes" | "time" | "wallet" | "office" | "studio" | "clipboard" | "apps" | "mail" | "phone" | "meet" | "tv";
+export type ModuleId = "files" | "gallery" | "video" | "terminal" | "notes" | "time" | "wallet" | "office" | "studio" | "clipboard" | "apps" | "mail" | "phone" | "meet" | "tv" | "messages";
 
-export const MODULE_IDS: readonly ModuleId[] = ["files", "gallery", "video", "terminal", "notes", "time", "wallet", "office", "studio", "clipboard", "apps", "mail", "phone", "meet", "tv"];
+export const MODULE_IDS: readonly ModuleId[] = ["files", "gallery", "video", "terminal", "notes", "time", "wallet", "office", "studio", "clipboard", "apps", "mail", "phone", "meet", "tv", "messages"];
 
 /** A dot on a module's rail button while it has something going on (Time: a timer running). */
 export interface RailStatus {
@@ -12,6 +12,8 @@ export interface RailStatus {
   tone: "live" | "paused" | "on";
   /** Added to the button's tooltip. */
   title: string;
+  /** A number shown on the button instead of the dot (Messages: unread). */
+  count?: number;
 }
 
 /** Something one module asks the shell to show, usually in another module. */

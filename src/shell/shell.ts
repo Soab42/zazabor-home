@@ -203,6 +203,10 @@ export class Shell implements ShellContext {
     if (isMainWindow && this.config.features.meet) {
       void import("../modules/meet/global").then((m) => m.startMeetService(this)).catch((err) => console.warn("Meet:", err));
     }
+    // Messages: the always-on accounts start, and a clicked notification opens its account.
+    if (isMainWindow && this.config.features.messages) {
+      void import("../modules/messages/global").then((m) => m.startMessagesService(this)).catch((err) => console.warn("Messages:", err));
+    }
     if (isMainWindow) void listen("notes-show-list", () => this.config.features.notes && this.showModule("notes"));
     // Zazabor launched again ("Open with" while it runs, or in the background): open what it was given.
     if (isMainWindow) void listen<string>("open-path", (e) => void this.openPath(e.payload, 1));

@@ -6,6 +6,7 @@ import { codeEditor, files } from "./files";
 import { gallery, quickEdit, slideshows } from "./gallery";
 import { gettingStarted } from "./getting-started";
 import { mail } from "./mail";
+import { messages } from "./messages";
 import { motionTemplates, screenRecorder } from "./motion";
 import { notes } from "./notes";
 import { office } from "./office";
@@ -25,7 +26,7 @@ import { whatsNew } from "./whats-new";
 export const ARTICLES: GuideArticle[] = [
   gettingStarted,
   files, gallery, quickEdit, slideshows, videoPlayer, terminal, codeEditor,
-  notes, time, wallet, walletStatements, clipboard, mail, phone,
+  notes, time, wallet, walletStatements, clipboard, mail, messages, phone,
   office, docs, sheets, pdf,
   studio, photo, videoEditor, motionTemplates, screenRecorder,
   apps, settings, privacyLock, windows, backgroundQuit, install, shortcuts,

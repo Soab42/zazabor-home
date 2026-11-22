@@ -95,9 +95,103 @@ export interface MeetingInput {
   invitees: { email: string; name: string }[];
 }
 
+/** Settings → Meet → Transcripts and notes. */
+export interface AiSettings {
+  /** Transcribe and take notes when a meeting ends. */
+  auto: boolean;
+  /** "auto": small, medium once Bangla is heard. */
+  model: "auto" | "small" | "medium";
+  notesLang: "en" | "bn" | "both";
+  /** Translate English speech into Bangla subtitles (slow: the notes model does it). */
+  bnSubs: boolean;
+}
+
+/** What the card of a recording shows about its transcript job. */
+export interface AiInfo {
+  id: string;
+  /** Per-speaker audio tracks saved (0: only the mixed sound is there). */
+  tracks: number;
+  state: "none" | "queued" | "running" | "done" | "error" | "cancelled" | "off" | "needs-models";
+  stage: string;
+  /** 0…1 */
+  progress: number;
+  message: string;
+  hasTranscript: boolean;
+  hasNotes: boolean;
+  /** Model ids a "needs-models" job waits for ("small", "medium", "qwen"). */
+  missing: string[];
+}
+
+export interface AiModel {
+  id: string;
+  label: string;
+  note: string;
+  bytes: number;
+  installed: boolean;
+  partial: number;
+  downloading: boolean;
+  error: string | null;
+}
+
+export interface TranscriptSegment {
+  speaker: string;
+  track: string;
+  /** Seconds from the start of the recording. */
+  start: number;
+  end: number;
+  /** What was spoken: "en" or "bn". */
+  lang: string;
+  text: string;
+  en: string | null;
+  bn: string | null;
+}
+
+export interface TranscriptDoc {
+  version: number;
+  model: string;
+  /** "en", "bn" or "mixed". */
+  language: string;
+  duration: number;
+  segments: TranscriptSegment[];
+}
+
+export interface NotesAction {
+  owner: string;
+  task: string;
+  due: string | null;
+}
+
+export interface NotesChapter {
+  start: number;
+  end: number;
+  title: string;
+  summary: string;
+}
+
+/** The notes in one language. */
+export interface Notes {
+  summary: string;
+  decisions: string[];
+  actions: NotesAction[];
+  questions: string[];
+  chapters: NotesChapter[];
+}
+
+export interface NotesDoc {
+  version: number;
+  language: "en" | "bn" | "both";
+  model: string;
+  generatedAt: number;
+  edited: boolean;
+  en: Notes | null;
+  bn: Notes | null;
+}
+
 export interface Events {
   "meet-changed": null;
   "meet-knock": { meetingId: string; title: string; name: string };
+  /** A transcript job moved on (`id`, with state, stage, progress and message), or a model download ended (`models`). */
+  "meet-ai": { id?: string; state?: AiInfo["state"]; stage?: string; progress?: number; message?: string; models?: boolean };
 }
 
 // ---- the dev mock -------------------------------------------------------------------------------
@@ -151,6 +245,22 @@ export const meetApi = {
   end: (id: string) => call<void>("meet_end", { id }),
   recordings: () => call<Recording[]>("meet_recordings"),
   recordingDelete: (id: string) => call<void>("meet_recording_delete", { id }),
+  // Transcripts, subtitles and notes (docs/plans/meet-notes.md).
+  aiSettings: () => call<AiSettings>("meet_ai_settings"),
+  setAiSettings: (settings: AiSettings) => call<AiSettings>("meet_ai_set_settings", { settings }),
+  aiStatus: () => call<AiInfo[]>("meet_ai_status"),
+  aiModels: () => call<AiModel[]>("meet_ai_models"),
+  aiModelDownload: (id: string) => call<void>("meet_ai_model_download", { id }),
+  aiModelCancel: (id: string) => call<void>("meet_ai_model_cancel", { id }),
+  aiModelRemove: (id: string) => call<void>("meet_ai_model_remove", { id }),
+  /** Transcribes (and writes the notes); `redo: "notes"` keeps the transcript. */
+  aiRun: (id: string, options?: { redo?: "all" | "notes"; model?: AiSettings["model"] }) => call<void>("meet_ai_run", { id, options: options ?? null }),
+  aiCancel: (id: string) => call<void>("meet_ai_cancel", { id }),
+  /** Switches the automatic transcript off (or on again) for one meeting. */
+  aiOff: (id: string, off: boolean) => call<void>("meet_ai_off", { id, off }),
+  transcript: (id: string) => call<TranscriptDoc>("meet_transcript", { id }),
+  notes: (id: string) => call<NotesDoc | null>("meet_notes", { id }),
+  notesSave: (id: string, notes: { en?: Notes | null; bn?: Notes | null }) => call<void>("meet_notes_save", { id, notes }),
   tunnel: (on: boolean) => call<MeetState>("meet_tunnel", { on }),
   settings: (stun: string[], turn: Turn | null) => call<MeetState>("meet_settings", { stun, turn }),
   /** Quick link or own domain. Omit `hostname`/`token` to keep what's saved; `clearToken` forgets the token. */
@@ -200,6 +310,15 @@ export function whenText(m: Meeting): string {
 
 export function clockText(ms: number): string {
   return timeFormat.format(ms);
+}
+
+/** "1:15" or "1:02:05". */
+export function timeText(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const mm = Math.floor(s / 60) % 60;
+  const ss = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(mm).padStart(2, "0")}:${ss}` : `${mm}:${ss}`;
 }
 
 /** "30 min", "1 h 30 min". */

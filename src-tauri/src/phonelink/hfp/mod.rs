@@ -205,7 +205,11 @@ fn state() -> BtState {
 
 fn emit() {
     if let Some(app) = APP.get() {
-        let _ = app.emit("phone-bt", state());
+        let state = state();
+        let phone_id = state.devices.iter().find(|d| d.connected).and_then(|d| d.phone_id.clone());
+        let incoming = state.calls.iter().find(|c| matches!(c.state, at::CallState::Incoming | at::CallState::Waiting));
+        crate::alerts::phone_ring(phone_id, incoming.map(|c| (c.number.clone(), c.name.clone(), c.state == at::CallState::Waiting)));
+        let _ = app.emit("phone-bt", state);
     }
 }
 
@@ -487,6 +491,7 @@ fn on_event(session: &Arc<Session>, event: Event) {
             let phone_id = linked_phone(&session.name);
             let call = named(vec![call], phone_id.as_deref()).remove(0);
             if let Some(app) = APP.get() {
+                crate::alerts::phone_ring(phone_id.clone(), Some((call.number.clone(), call.name.clone(), call.state == at::CallState::Waiting)));
                 let _ = app.emit("phone-ring", &call);
             }
         }

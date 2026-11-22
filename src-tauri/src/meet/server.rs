@@ -202,6 +202,8 @@ fn serve(hub: &Arc<Hub>, mut stream: TcpStream) -> Result<(), String> {
             None => json_reply(&mut stream, "404 Not Found", json!({"error": "not-found"})),
         },
         ("POST", ["rec", code]) => rec_upload(hub, &mut stream, &req, code),
+        ("POST", ["rec", code, "track"]) => track_upload(hub, &mut stream, &req, code),
+        ("POST", ["rec", code, "finish"]) => rec_finish(hub, &mut stream, &req, code),
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"Not found", false),
     }
     Ok(())
@@ -226,6 +228,43 @@ fn rec_upload(hub: &Arc<Hub>, stream: &mut TcpStream, req: &Request, code: &str)
     }
     match hub.rec_append(code, rec, seq, &body) {
         Ok(next) => json_reply(stream, "200 OK", json!({"next": next})),
+        Err((status, msg)) => json_reply(stream, status, json!({"error": msg})),
+    }
+}
+
+/// One participant's audio track: `track` (an id), `name`, `offset` (ms into the recording), `seq`.
+fn track_upload(hub: &Arc<Hub>, stream: &mut TcpStream, req: &Request, code: &str) {
+    if !req.q("host").is_some_and(|t| hub.is_host_token(t)) || req.via_tunnel() {
+        return json_reply(stream, "403 Forbidden", json!({"error": "host token needed"}));
+    }
+    let len = req.header("content-length").and_then(|v| v.parse::<usize>().ok());
+    let Some(len) = len else { return json_reply(stream, "411 Length Required", json!({"error": "length"})) };
+    if len > MAX_CHUNK {
+        return json_reply(stream, "413 Payload Too Large", json!({"error": "too large"}));
+    }
+    let (Some(rec), Some(track), Some(seq)) = (req.q("rec"), req.q("track"), req.q("seq").and_then(|s| s.parse::<u64>().ok())) else {
+        return json_reply(stream, "400 Bad Request", json!({"error": "rec, track and seq"}));
+    };
+    let offset = req.q("offset").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let mut body = vec![0u8; len];
+    if stream.read_exact(&mut body).is_err() {
+        return json_reply(stream, "400 Bad Request", json!({"error": "short body"}));
+    }
+    match hub.track_append(code, rec, track, seq, req.q("name").unwrap_or("Speaker"), offset, &body) {
+        Ok(next) => json_reply(stream, "200 OK", json!({"next": next})),
+        Err((status, msg)) => json_reply(stream, status, json!({"error": msg})),
+    }
+}
+
+/// The host's page has sent every chunk of the recording.
+fn rec_finish(hub: &Arc<Hub>, stream: &mut TcpStream, req: &Request, code: &str) {
+    if !req.q("host").is_some_and(|t| hub.is_host_token(t)) || req.via_tunnel() {
+        return json_reply(stream, "403 Forbidden", json!({"error": "host token needed"}));
+    }
+    let Some(rec) = req.q("rec") else { return json_reply(stream, "400 Bad Request", json!({"error": "rec"})) };
+    match hub.rec_finish(code, rec) {
+        Ok(()) => json_reply(stream, "200 OK", json!({"ok": true})),
         Err((status, msg)) => json_reply(stream, status, json!({"error": msg})),
     }
 }

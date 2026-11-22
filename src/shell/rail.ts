@@ -63,7 +63,7 @@ export class Rail {
   setStatus(id: ModuleId, status: RailStatus | null) {
     // The same status again changes nothing (and must not rebuild the dot, which restarts its pulse).
     const before = this.statuses.get(id);
-    if (before?.tone === status?.tone && before?.title === status?.title) return;
+    if (before?.tone === status?.tone && before?.title === status?.title && before?.count === status?.count) return;
     if (status) this.statuses.set(id, status);
     else this.statuses.delete(id);
     this.showStatus(id);
@@ -75,8 +75,9 @@ export class Rail {
     const status = this.statuses.get(id);
     const index = [...this.buttons.keys()].indexOf(id);
     button.title = `${MODULES[id].title}  Ctrl+${index + 1}${status ? `\n${status.title}` : ""}`;
-    button.querySelector(".rail-dot")?.remove();
-    if (status) button.append(h("span", { class: `rail-dot ${status.tone}` }));
+    button.querySelector(".rail-dot, .rail-count")?.remove();
+    if (status?.count) button.append(h("span", { class: "rail-count" }, status.count > 99 ? "99+" : String(status.count)));
+    else if (status) button.append(h("span", { class: `rail-dot ${status.tone}` }));
   }
 
   /** Marks the module whose workspace is showing; `null` while Settings has the workspace. */

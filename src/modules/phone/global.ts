@@ -1,5 +1,6 @@
 import type { ShellContext } from "../../shell/module";
 import { isMainWindow } from "../../shell/windows";
+import { mountAlertKeys } from "../../alerts/keys";
 import { phoneApi } from "./api";
 import { mountCallBar } from "./callbar";
 import { showPairDialog } from "./pair";
@@ -36,6 +37,7 @@ export function startPhoneService(shell: ShellContext) {
     const pairing = getState()?.pairing;
     if (pairing && enabled()) showPairDialog(pairing);
   });
+  mountAlertKeys();
   mountCallBar(() => {
     if (enabled()) shell.showModule("phone");
   });

@@ -1,5 +1,5 @@
 import type { Account, Address, Overview } from "../mail/api";
-import type { DomainCheck, Events, MeetMock, MeetState, Meeting, MeetingInput, Recording } from "./api";
+import type { AiInfo, AiModel, AiSettings, DomainCheck, Events, MeetMock, MeetState, Meeting, MeetingInput, NotesDoc, Recording, TranscriptDoc } from "./api";
 
 /**
  * A pretend backend for working on the Meet section without one (dev builds only; see api.ts).
@@ -49,6 +49,52 @@ export function createMock(mode: string): MeetMock {
     { id: "r3", meetingId: "a1b2c3d4e5f60006", title: "Interview: front-end role", path: "/home/soab/Videos/Zazabor Meetings/Interview front-end role 2026-11-12 15.00.webm", startedAt: at(-9, 15, 0), endedAt: at(-9, 15, 0) + 41 * min, bytes: 402_000_000 },
     { id: "r4", meetingId: "a1b2c3d4e5f60005", title: "Meeting", path: "/home/soab/Videos/Zazabor Meetings/Meeting 2026-11-17 09.20.webm", startedAt: at(-4, 9, 20), endedAt: at(-4, 9, 20) + 6 * min, bytes: 41_500_000 },
   ];
+
+  // Transcripts and notes: r2 is done, r3 is being worked on, r4 waits for the models.
+  const aiSettings: AiSettings = { auto: true, model: "auto", notesLang: "both", bnSubs: true };
+  const aiInfos: AiInfo[] = [
+    { id: "r1", tracks: 0, state: "none", stage: "", progress: 0, message: "", hasTranscript: false, hasNotes: false, missing: [] },
+    { id: "r2", tracks: 3, state: "done", stage: "", progress: 1, message: "14 lines from 4 min of talk.", hasTranscript: true, hasNotes: true, missing: [] },
+    { id: "r3", tracks: 2, state: "running", stage: "transcribe", progress: 0.42, message: "Transcribing 17 of 41 min…", hasTranscript: false, hasNotes: false, missing: [] },
+    { id: "r4", tracks: 0, state: "needs-models", stage: "", progress: 0, message: "Download the speech and notes models first.", hasTranscript: false, hasNotes: false, missing: ["small", "qwen"] },
+  ];
+  const aiModels: AiModel[] = [
+    { id: "small", label: "Whisper small", note: "Speech to text; good for English.", bytes: 487_601_967, installed: false, partial: 0, downloading: false, error: null },
+    { id: "medium", label: "Whisper medium", note: "Speech to text; clearly better for Bangla.", bytes: 1_533_763_059, installed: false, partial: 0, downloading: false, error: null },
+    { id: "qwen", label: "Qwen2.5 3B Instruct", note: "Writes the notes and translates between English and Bangla.", bytes: 2_104_932_768, installed: false, partial: 0, downloading: false, error: null },
+  ];
+  const line = (speaker: string, start: number, lang: "en" | "bn", text: string, en: string | null, bn: string | null) => ({ speaker, track: speaker, start, end: start + 6, lang, text, en, bn });
+  const transcript: TranscriptDoc = {
+    version: 1, model: "small+medium", language: "mixed", duration: 3480,
+    segments: [
+      line("Ayesha Rahman", 4, "en", "Good morning everyone, let's start with the quarter's targets.", null, "সবাইকে শুভ সকাল, চলুন এই প্রান্তিকের লক্ষ্য দিয়ে শুরু করি।"),
+      line("Tanvir Hasan", 12, "bn", "আমি মনে করি আমাদের মোবাইল অ্যাপের কাজ আগে শেষ করা উচিত।", "I think we should finish the mobile app work first.", null),
+      line("Nadia Islam", 21, "en", "Agreed. The design for the checkout screen is ready for review.", null, "একমত। চেকআউট স্ক্রিনের ডিজাইন রিভিউয়ের জন্য প্রস্তুত।"),
+      line("Ayesha Rahman", 33, "en", "Great. Tanvir, can you review it by Thursday?", null, "দারুণ। তানভীর, তুমি কি বৃহস্পতিবারের মধ্যে এটা দেখে দিতে পারবে?"),
+      line("Tanvir Hasan", 41, "bn", "হ্যাঁ, বৃহস্পতিবারের মধ্যে দেখে দেব।", "Yes, I'll look at it by Thursday.", null),
+      line("Nadia Islam", 305, "en", "On pricing, should we keep the free plan for another quarter?", null, "মূল্য নিয়ে, আমরা কি আরও এক প্রান্তিক ফ্রি প্ল্যান রাখব?"),
+      line("Ayesha Rahman", 316, "en", "Let's keep it until March, then review the numbers.", null, "চলো মার্চ পর্যন্ত রাখি, তারপর সংখ্যাগুলো দেখব।"),
+      line("Tanvir Hasan", 330, "bn", "ঠিক আছে, তাহলে আমি মার্চের আগে একটা রিপোর্ট তৈরি করব।", "Okay, then I'll prepare a report before March.", null),
+    ],
+  };
+  const aiNotes: NotesDoc = {
+    version: 1, language: "both", model: "qwen2.5-3b-instruct-q4_k_m", generatedAt: now, edited: false,
+    en: {
+      summary: "The team agreed to finish the mobile app first. The checkout design is ready for review, and the free plan stays until March.",
+      decisions: ["Finish the mobile app work first", "Keep the free plan until March, then review the numbers"],
+      actions: [{ owner: "Tanvir Hasan", task: "Review the checkout design", due: "Thursday" }, { owner: "Tanvir Hasan", task: "Prepare a usage report", due: "before March" }],
+      questions: ["Should the free plan continue after March?"],
+      chapters: [{ start: 4, end: 120, title: "Quarter targets", summary: "Priorities for the quarter and the checkout design review." }, { start: 305, end: 420, title: "Pricing", summary: "The free plan is kept until March." }],
+    },
+    bn: {
+      summary: "দল প্রথমে মোবাইল অ্যাপের কাজ শেষ করতে একমত হয়েছে। চেকআউট ডিজাইন রিভিউয়ের জন্য প্রস্তুত এবং মার্চ পর্যন্ত ফ্রি প্ল্যান থাকবে।",
+      decisions: ["প্রথমে মোবাইল অ্যাপের কাজ শেষ করা", "মার্চ পর্যন্ত ফ্রি প্ল্যান রাখা, তারপর সংখ্যা দেখা"],
+      actions: [{ owner: "Tanvir Hasan", task: "চেকআউট ডিজাইন দেখা", due: "বৃহস্পতিবার" }, { owner: "Tanvir Hasan", task: "ব্যবহারের রিপোর্ট তৈরি", due: "মার্চের আগে" }],
+      questions: ["মার্চের পরেও কি ফ্রি প্ল্যান চলবে?"],
+      chapters: [{ start: 4, end: 120, title: "প্রান্তিকের লক্ষ্য", summary: "প্রান্তিকের অগ্রাধিকার এবং চেকআউট ডিজাইনের রিভিউ।" }, { start: 305, end: 420, title: "মূল্য নির্ধারণ", summary: "মার্চ পর্যন্ত ফ্রি প্ল্যান থাকছে।" }],
+    },
+  };
+  const aiFind = (id: unknown) => aiInfos.find((i) => i.id === id) ?? (() => { throw new Error("That recording isn't there any more."); })();
 
   const account = (id: string, email: string, name: string): Account => ({ id, email, name, color: "#0a84ff", username: email, imap: { host: "imap.example.com", port: 993, security: "ssl" }, smtp: { host: "smtp.example.com", port: 465, security: "ssl" } } as unknown as Account);
   const accounts = mode === "nomail" ? [] : [account("acc1", "me@example.com", "Soab"), account("acc2", "work@example.org", "Soab (work)")];
@@ -166,6 +212,36 @@ export function createMock(mode: string): MeetMock {
             : { result: "this-pc", message: `It works: guests who open ${state.hostname} reach this PC.` };
           return wait(result, 700);
         }
+        case "meet_ai_settings": return wait(aiSettings);
+        case "meet_ai_set_settings": return wait(Object.assign(aiSettings, a.settings as AiSettings));
+        case "meet_ai_status": return wait(aiInfos);
+        case "meet_ai_models": return wait(aiModels);
+        case "meet_ai_model_download": {
+          const m = aiModels.find((x) => x.id === a.id)!;
+          m.downloading = true;
+          const timer = window.setInterval(() => {
+            m.partial = Math.min(m.bytes, m.partial + m.bytes / 8);
+            if (m.partial >= m.bytes) {
+              window.clearInterval(timer);
+              Object.assign(m, { installed: true, downloading: false });
+            }
+            emit("meet-ai", { models: true });
+          }, 600);
+          return wait(undefined);
+        }
+        case "meet_ai_model_cancel": { aiModels.find((x) => x.id === a.id)!.downloading = false; return wait(undefined); }
+        case "meet_ai_model_remove": { Object.assign(aiModels.find((x) => x.id === a.id)!, { installed: false, partial: 0 }); return wait(undefined); }
+        case "meet_ai_run": {
+          const i = aiFind(a.id);
+          Object.assign(i, { state: "running", stage: "transcribe", progress: 0.05, message: "Transcribing 2 of 41 min…" });
+          emit("meet-ai", { id: i.id, state: "running", stage: i.stage, progress: i.progress, message: i.message });
+          return wait(undefined);
+        }
+        case "meet_ai_cancel": { Object.assign(aiFind(a.id), { state: "cancelled", message: "Stopped." }); changed(); return wait(undefined); }
+        case "meet_ai_off": { Object.assign(aiFind(a.id), { state: a.off ? "off" : "none" }); changed(); return wait(undefined); }
+        case "meet_transcript": return wait(transcript);
+        case "meet_notes": return wait(aiNotes);
+        case "meet_notes_save": return wait(undefined);
         case "mail_overview": return wait({ accounts, drafts: 0, colors: [] } satisfies Overview);
         case "mail_contacts": {
           const p = String(a.prefix ?? "").toLowerCase();

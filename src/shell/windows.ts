@@ -21,6 +21,8 @@ export type WindowStart =
   | { module: "note"; path: string }
   /** The Win+V clipboard popup. */
   | { module: "clipboard-popup"; path?: null }
+  /** The corner window for call cards and message toasts. */
+  | { module: "alerts"; path?: null }
   /** The screen recorder (`zazabor --record`), its control bar, and its area picker (`path`: the monitor). */
   | { module: "recorder" | "recorder-pill" | "recorder-area"; path?: string | null };
 

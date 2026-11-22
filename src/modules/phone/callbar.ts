@@ -4,6 +4,7 @@ import { duration, errorText, phoneApi, type AppCallState, type LiveCall } from 
 import { callPhone, contactFor, displayFor, getBt, onEvent, setBt, subscribe } from "./store";
 import { avatar } from "./ui";
 import { showToast } from "../files/ops/toast";
+import { alertsApi, onAlertsSettings } from "../../alerts/api";
 
 /**
  * Calls in the main window, whatever section is open: an incoming-call card (Answer, Decline),
@@ -22,6 +23,13 @@ export function mountCallBar(openPhone: () => void): () => void {
    * then the PC can answer, decline and end it through the app, but its sound stays on the phone.
    */
   let appCall: (LiveCall & { phoneId: string }) | null = null;
+  /**
+   * Incoming calls ring in the alerts window (the corner of the screen, with the main window
+   * hidden too); this window shows the card itself only when Settings → Alerts turned that off.
+   */
+  let alertsShowRings = true;
+  void alertsApi.settings().then((s) => ((alertsShowRings = s.phoneCalls), draw()), () => undefined);
+  void onAlertsSettings((s) => ((alertsShowRings = s.phoneCalls), draw()));
   const viaApp = (call: LiveCall) => !!appCall && call === appCall;
   const appPhone = () => appCall?.phoneId;
 
@@ -133,8 +141,10 @@ export function mountCallBar(openPhone: () => void): () => void {
     } else {
       host.append(capsule(lead, live.filter((c) => c !== lead)));
     }
-    if (incoming && !lead) host.append(incomingCard(incoming, false));
-    else if (waiting || (incoming && lead)) host.append(incomingCard((waiting ?? incoming)!, true));
+    if (!alertsShowRings) {
+      if (incoming && !lead) host.append(incomingCard(incoming, false));
+      else if (waiting || (incoming && lead)) host.append(incomingCard((waiting ?? incoming)!, true));
+    }
     document.body.classList.toggle("pl-in-call", !!lead);
   }
 

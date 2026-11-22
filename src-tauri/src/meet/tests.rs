@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -432,6 +432,68 @@ fn recording_chunks_append_in_order_and_need_the_host_token() {
     f.hub.delete_recording(&r.id).unwrap();
     assert!(!PathBuf::from(&r.path).exists());
     assert_eq!(f.hub.recordings().unwrap().len(), 1);
+}
+
+fn track_upload(f: &Fixture, code: &str, token: &str, rec: &str, track: &str, seq: u64, body: &[u8], extra: &str) -> (String, Value) {
+    let req = format!("POST /rec/{code}/track?host={token}&rec={rec}&track={track}&seq={seq}&name=Ayesha%20R&offset=2500 HTTP/1.1\r\nHost: x\r\n{extra}Content-Length: {}\r\n\r\n", body.len());
+    let (head, body) = http(f.port, &req, body);
+    (head.lines().next().unwrap().to_string(), serde_json::from_str(&body).unwrap_or(Value::Null))
+}
+
+#[test]
+fn speaker_tracks_need_the_host_token_and_a_started_recording_and_keep_order() {
+    let f = fixture("tracks");
+    // Nothing here should start a transcription job.
+    f.hub.set_ai_settings(&ai::Settings { auto: false, ..Default::default() }).unwrap();
+    let m = meeting(&f, false);
+    let token = f.hub.host_token().to_string();
+    let rec = "abcdef0123456789";
+    let other = "0123456789abcdef";
+    assert!(track_upload(&f, &m.code, &token, rec, "trackone1", 0, b"x", "").0.contains("404"), "the recording hasn't started");
+    assert!(upload(&f, &m.code, &token, rec, 0, b"MIXED", "").0.contains("200"));
+
+    assert!(track_upload(&f, &m.code, "wrong", rec, "trackone1", 0, b"EVIL", "").0.contains("403"));
+    assert!(track_upload(&f, &m.code, &token, rec, "trackone1", 0, b"EVIL", "cf-connecting-ip: 1.1.1.1\r\n").0.contains("403"));
+    assert!(track_upload(&f, &m.code, &token, rec, "t/../x", 0, b"A", "").0.contains("400"));
+    assert!(track_upload(&f, &m.code, &token, rec, "trackone1", 1, b"B", "").0.contains("404"), "no seq 0 yet");
+    assert!(track_upload(&f, &m.code, &token, other, "trackone1", 0, b"A", "").0.contains("404"), "another recording");
+    assert_eq!(track_upload(&f, &m.code, &token, rec, "trackone1", 0, b"one-", "").1["next"], 1);
+    assert_eq!(track_upload(&f, &m.code, &token, rec, "trackone1", 1, b"two-", "").1["next"], 2);
+    assert!(track_upload(&f, &m.code, &token, rec, "trackone1", 4, b"gap", "").0.contains("409"));
+    assert_eq!(track_upload(&f, &m.code, &token, rec, "trackone1", 1, b"two-", "").1["next"], 2, "a repeat is ignored");
+    assert_eq!(track_upload(&f, &m.code, &token, rec, "trackone1", 2, b"three", "").1["next"], 3);
+    // A second participant is a second file.
+    assert_eq!(track_upload(&f, &m.code, &token, rec, "tracktwo2", 0, b"other", "").1["next"], 1);
+    // Too big a chunk is refused before it is read.
+    let (status, _) = http(f.port, &format!("POST /rec/{}/track?host={token}&rec={rec}&track=trackone1&seq=3 HTTP/1.1\r\nContent-Length: {}\r\n\r\n", m.code, server::MAX_CHUNK + 1), b"");
+    assert!(status.contains("413"), "{status}");
+
+    let r = f.hub.recordings().unwrap().remove(0);
+    let tracks = ai::list_tracks(Path::new(&r.path));
+    assert_eq!(tracks.len(), 2);
+    assert_eq!((tracks[0].name.as_str(), tracks[0].offset), ("Ayesha R", 2.5));
+    assert!(tracks[0].stem.starts_with("1-") && tracks[1].stem.starts_with("2-"));
+    assert_eq!(std::fs::read(&tracks[0].path).unwrap(), b"one-two-three");
+    assert_eq!(std::fs::read(&tracks[1].path).unwrap(), b"other");
+
+    // Finishing needs the token too, and then no more chunks are taken.
+    let finish = |token: &str| {
+        let req = format!("POST /rec/{}/finish?host={token}&rec={rec} HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n", m.code);
+        http(f.port, &req, b"").0
+    };
+    assert!(finish("wrong").contains("403"));
+    assert!(finish(&token).contains("200"));
+    assert!(track_upload(&f, &m.code, &token, rec, "trackone1", 3, b"late", "").0.contains("404"));
+    assert_eq!(std::fs::read(&tracks[0].path).unwrap(), b"one-two-three");
+    let info = f.hub.ai_infos().unwrap().remove(0);
+    assert_eq!((info.tracks, info.state.as_str(), info.has_transcript), (2, "none", false));
+
+    // Deleting the recording takes the tracks and everything made from them.
+    let p = ai::paths(Path::new(&r.path));
+    std::fs::write(&p.transcript, b"{}").unwrap();
+    std::fs::write(&p.en_vtt, b"WEBVTT").unwrap();
+    f.hub.delete_recording(&r.id).unwrap();
+    assert!(!p.tracks.exists() && !p.transcript.exists() && !p.en_vtt.exists());
 }
 
 #[test]

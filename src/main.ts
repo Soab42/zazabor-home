@@ -16,6 +16,8 @@ loadConfig()
     if (windowStart?.module === "clipboard-popup") return (await import("./clipboard/popup")).startClipboardPopup(config);
     // The screen recorder's window, its floating control bar and its area picker.
     if (windowStart?.module === "recorder") return (await import("./modules/studio/record/windows")).startRecorderWindow(config);
+    // The corner window for call cards and message toasts.
+    if (windowStart?.module === "alerts") return (await import("./alerts/window")).startAlertsWindow(config);
     if (windowStart?.module === "recorder-pill") return (await import("./modules/studio/record/windows")).startRecorderBar(config);
     if (windowStart?.module === "recorder-area") return (await import("./modules/studio/record/windows")).startAreaPicker(config, windowStart.path);
     return new Shell(config).start();

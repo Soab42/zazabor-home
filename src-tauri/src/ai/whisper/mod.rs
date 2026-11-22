@@ -1,4 +1,4 @@
-//! Speech to text for auto captions: OpenAI's Whisper run on the CPU in Rust (candle), reading
+//! Speech to text for Studio's auto captions and Meet's transcripts: OpenAI's Whisper run on the CPU in Rust (candle), reading
 //! whisper.cpp's official model files (see `models`). Nothing is built from C++ and nothing leaves
 //! the computer.
 
@@ -7,7 +7,7 @@ mod ggml;
 pub mod mel;
 mod model;
 
-pub use decode::{Transcript, Word, LANGUAGES};
+pub use decode::{Options, Segment, Transcript, Word, LANGUAGES};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
@@ -27,6 +27,11 @@ fn loaded() -> &'static Mutex<Option<Loaded>> {
 /// Transcribes 16 kHz mono audio with the model file at `model_path` (kept loaded for the next
 /// call). `language` is a Whisper code ("en", "bn"…) or None to detect it.
 pub fn transcribe(model_path: &Path, pcm: &[f32], language: Option<&str>, progress: &dyn Fn(f64), cancel: &AtomicBool) -> Result<Transcript, String> {
+    transcribe_with(model_path, pcm, &Options { language, ..Default::default() }, progress, cancel)
+}
+
+/// Like `transcribe`, with the translate task and per-window language detection (see `Options`).
+pub fn transcribe_with(model_path: &Path, pcm: &[f32], opts: &Options, progress: &dyn Fn(f64), cancel: &AtomicBool) -> Result<Transcript, String> {
     let mut guard = loaded().lock().unwrap_or_else(|e| e.into_inner());
     let key = model_path.to_string_lossy().into_owned();
     if guard.as_ref().is_none_or(|l| l.path != key) {
@@ -40,9 +45,9 @@ pub fn transcribe(model_path: &Path, pcm: &[f32], language: Option<&str>, progre
     }
     let l = guard.as_mut().expect("just loaded");
     if pcm.len() < mel::SAMPLE_RATE / 4 {
-        return Ok(Transcript { language: language.unwrap_or("en").into(), segments: Vec::new() });
+        return Ok(Transcript { language: opts.language.unwrap_or("en").into(), segments: Vec::new() });
     }
-    decode::transcribe(&mut l.model, &l.filters, &l.vocab, pcm, language, progress, cancel)
+    decode::transcribe_with(&mut l.model, &l.filters, &l.vocab, pcm, opts, progress, cancel)
 }
 
 /// Lets the loaded model go (hundreds of MB).

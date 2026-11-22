@@ -1,0 +1,77 @@
+/* The alerts window: transparent, only the cards are drawn. */
+html:has(body.alerts-window), body.alerts-window { background: transparent !important; overflow: hidden; }
+body.alerts-window, body.alerts-window #app { height: auto; min-height: 0; display: block; }
+.al-root { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 12px; width: 408px; box-sizing: border-box; user-select: none; }
+.al-root[data-position^="top"] { flex-direction: column-reverse; }
+.al-stack { display: flex; flex-direction: column; gap: 10px; }
+.al-root[data-position^="top"] .al-stack { flex-direction: column-reverse; }
+
+.al-card {
+  position: relative; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 18px; color: var(--text);
+  background: color-mix(in srgb, var(--bg-raised) 96%, transparent);
+  box-shadow: 0 0 0 1px rgba(var(--fg), 0.12), 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  animation: al-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+@keyframes al-in { from { opacity: 0; transform: translateY(14px) scale(0.97); } }
+
+.al-tile { display: inline-flex; align-items: center; justify-content: center; border-radius: 28%; color: #fff; flex: none; }
+.al-tile.phone { background: #2fb86a; }
+.al-tile.sms { background: #3b82f6; }
+.al-face { position: relative; display: inline-flex; flex: none; }
+.al-badge { position: absolute; right: -5px; bottom: -4px; display: inline-flex; border-radius: 6px; box-shadow: 0 0 0 2px var(--bg-raised); }
+.al-badge .msg-svc, .al-badge .al-tile { width: 16px !important; height: 16px !important; }
+
+/* message toast */
+.al-top { display: flex; align-items: flex-start; gap: 6px; }
+.al-head { all: unset; flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; cursor: pointer; border-radius: 10px; }
+.al-head:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.al-head-text { display: flex; flex-direction: column; min-width: 0; }
+.al-name { font-size: var(--text-lg); font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.al-meta { font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.al-x { all: unset; display: inline-flex; padding: 5px; border-radius: 50%; cursor: pointer; color: var(--muted); }
+.al-x:hover { background: rgba(var(--fg), 0.12); color: var(--text); }
+.al-body { margin: 0; font-size: var(--text-md); color: var(--text-2); line-height: 1.4; cursor: pointer; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; user-select: text; }
+.al-note { margin: 0; font-size: var(--text-sm); color: var(--muted); }
+.al-note.ok { color: #4ade80; font-weight: 600; }
+.al-reply, .al-custom { display: flex; gap: 6px; }
+.al-input {
+  flex: 1; min-width: 0; padding: 8px 12px; border-radius: 12px; border: 0; color: var(--text); font: inherit; font-size: var(--text-md);
+  background: rgba(var(--fg), 0.09); box-shadow: inset 0 0 0 1px rgba(var(--fg), 0.1); user-select: text;
+}
+.al-input:focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.al-send { all: unset; display: inline-flex; align-items: center; justify-content: center; width: 34px; border-radius: 12px; cursor: pointer; background: var(--accent); color: var(--accent-ink); }
+.al-send:disabled { opacity: 0.5; }
+.al-ico { all: unset; display: inline-flex; align-items: center; justify-content: center; width: 34px; border-radius: 12px; cursor: pointer; background: rgba(var(--fg), 0.1); color: var(--text); flex: none; }
+.al-ico:hover { background: rgba(var(--fg), 0.18); }
+.al-ico:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.al-actions { display: flex; gap: 6px; }
+.al-btn { all: unset; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: var(--text-sm); font-weight: 600; background: rgba(var(--fg), 0.1); color: var(--text); }
+.al-btn:hover { background: rgba(var(--fg), 0.18); }
+.al-btn:focus-visible, .al-send:focus-visible, .al-chip:focus-visible, .al-round:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.al-more { all: unset; align-self: center; padding: 5px 14px; border-radius: 999px; cursor: pointer; font-size: var(--text-sm); font-weight: 650; color: var(--text); background: color-mix(in srgb, var(--bg-raised) 96%, transparent); box-shadow: 0 0 0 1px rgba(var(--fg), 0.12), 0 4px 14px rgba(0, 0, 0, 0.4); }
+.al-more[hidden] { display: none; }
+
+/* call card */
+.al-card.call { padding: 14px 16px 16px; gap: 12px; box-shadow: 0 0 0 1.5px color-mix(in srgb, #2fb86a 60%, transparent), 0 10px 30px rgba(0, 0, 0, 0.5); }
+.al-call-head { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--muted); }
+.al-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.al-keys { font-size: 10px; opacity: 0.7; white-space: nowrap; }
+.al-call-who { display: flex; align-items: center; gap: 14px; }
+.al-call-text { display: flex; flex-direction: column; min-width: 0; }
+.al-call-text .al-name { font-size: var(--text-xl); }
+.al-sub { font-size: var(--text-sm); color: var(--muted); }
+.al-ring { position: relative; display: inline-flex; border-radius: 50%; animation: al-ring 1.4s ease-out infinite; }
+@keyframes al-ring { 0% { box-shadow: 0 0 0 0 rgba(47, 184, 106, 0.55); } 100% { box-shadow: 0 0 0 16px rgba(47, 184, 106, 0); } }
+.al-call-actions { display: flex; justify-content: space-around; gap: 8px; }
+.al-round-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--text-2); text-align: center; max-width: 110px; }
+.al-round { all: unset; width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #fff; }
+.al-round.accept { background: #2fb86a; }
+.al-round.end { background: #e5484d; }
+.al-round.neutral { background: rgba(var(--fg), 0.16); }
+.al-round:hover { filter: brightness(1.12); }
+.al-round:disabled { opacity: 0.5; }
+.al-quick { display: flex; flex-direction: column; gap: 6px; }
+.al-quick[hidden] { display: none; }
+.al-chip { all: unset; padding: 8px 12px; border-radius: 12px; cursor: pointer; font-size: var(--text-sm); background: rgba(var(--fg), 0.1); color: var(--text); }
+.al-chip:hover { background: rgba(var(--fg), 0.18); }
+@media (prefers-reduced-motion: reduce) { .al-card, .al-ring { animation: none; } }

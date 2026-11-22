@@ -7917,6 +7917,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tokenizers",
  "tokio",
  "tract-linalg",
  "tract-onnx",

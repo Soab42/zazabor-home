@@ -74,6 +74,12 @@ body.dropping::after { content: "Drop a folder or a file to open it"; }
   background: var(--dot); box-shadow: 0 0 0 2px var(--glass-strong, rgba(0, 0, 0, 0.4));
 }
 .rail-dot.paused { --dot: #f5a524; }
+/* A count on a module's button (Messages: unread). */
+.rail-count {
+  position: absolute; top: 3px; right: 3px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; box-sizing: border-box;
+  background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--glass-strong, rgba(0, 0, 0, 0.4)); pointer-events: none;
+}
 .rail-dot.failed { --dot: var(--danger); }
 .rail-btn.on { color: var(--text); background: var(--hover); }
 .rail-dot.on { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dot), 0 0 0 2px var(--glass-strong, rgba(0, 0, 0, 0.4)); }

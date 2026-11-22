@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { watchMailStatus } from "../modules/mail/status";
+import { watchMessagesStatus } from "../modules/messages/status";
 import { watchPhoneStatus } from "../modules/phone/status";
 import { watchTimeStatus } from "../modules/time/status";
 import { notesApi } from "../notes/api";
@@ -115,6 +116,13 @@ export const MODULES: Record<ModuleId, ModuleMeta> = {
     icon: "tv",
     blurb: "Movies and series from the DhakaFlix servers on your network, plus live channels from your own playlists, in an Apple TV style.",
     load: async () => (await import("../modules/tv")).createTvModule,
+  },
+  messages: {
+    title: "Messages",
+    icon: "message",
+    blurb: "WhatsApp, Messenger, Microsoft Teams, Telegram and more in one place: each account runs the service's own web app, with its own login.",
+    load: async () => (await import("../modules/messages")).createMessagesModule,
+    status: watchMessagesStatus,
   },
   apps: {
     title: "Apps",

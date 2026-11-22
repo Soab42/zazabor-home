@@ -1,3 +1,5 @@
+mod ai;
+mod alerts;
 mod awake;
 mod background;
 mod brand;
@@ -431,6 +433,9 @@ pub fn run() {
             messages::init(app.handle().clone(), app.path().app_data_dir()?);
             tv::init(app.handle().clone(), app.path().app_data_dir()?, app.path().app_cache_dir()?);
             phonelink::hfp::init(app.handle().clone());
+            // The alerts window (calls and messages in the corner of the screen) exists whenever
+            // Zazabor runs, the background mode included.
+            alerts::init(app.handle().clone(), app.path().app_data_dir()?);
             // A quick note (`--new-note`) starts with only the note, the clipboard (`--clipboard`)
             // with only the Win+V popup, `--background` with no window at all; otherwise the main
             // window.
@@ -451,6 +456,13 @@ pub fn run() {
                 video::window_closed(window.label());
                 term::window_closed(window.label());
                 awake::window_closed(window.label());
+                // The alerts window never ends Zazabor's life: without any other window, and not in
+                // the background mode, Zazabor exits as it did before that window existed.
+                let label = window.label();
+                let app = window.app_handle();
+                if label != alerts::LABEL && !background::keep_running() && !app.webview_windows().keys().any(|l| l != label && l != alerts::LABEL) {
+                    app.exit(0);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -864,17 +876,56 @@ pub fn run() {
             meet::meet_end,
             meet::meet_recordings,
             meet::meet_recording_delete,
+            meet::meet_ai_settings,
+            meet::meet_ai_set_settings,
+            meet::meet_ai_status,
+            meet::meet_ai_models,
+            meet::meet_ai_model_download,
+            meet::meet_ai_model_cancel,
+            meet::meet_ai_model_remove,
+            meet::meet_ai_run,
+            meet::meet_ai_cancel,
+            meet::meet_ai_off,
+            meet::meet_transcript,
+            meet::meet_notes,
+            meet::meet_notes_save,
             meet::meet_tunnel,
             meet::meet_settings,
             meet::meet_domain,
             meet::meet_domain_test,
-            messages::msg_create,
+            messages::msg_state,
+            messages::msg_add,
+            messages::msg_update,
+            messages::msg_reorder,
+            messages::msg_remove,
             messages::msg_show,
             messages::msg_hide,
             messages::msg_rect,
             messages::msg_reload,
-            messages::msg_zoom,
-            messages::msg_destroy,
+            messages::msg_hibernate,
+            messages::msg_open_external,
+            messages::msg_open_browser_window,
+            messages::msg_browser_name,
+            messages::msg_snapshot,
+            messages::msg_settings,
+            messages::msg_data_size,
+            messages::msg_clear_data,
+            messages::msg_start,
+            alerts::alerts_state,
+            alerts::alerts_ready,
+            alerts::alerts_resize,
+            alerts::alerts_hover,
+            alerts::alerts_dismiss,
+            alerts::alerts_answer,
+            alerts::alerts_decline,
+            alerts::alerts_reply,
+            alerts::alerts_call_message,
+            alerts::alerts_call,
+            alerts::alerts_read,
+            alerts::alerts_open,
+            alerts::alerts_hotkey,
+            alerts::alerts_settings,
+            alerts::alerts_set_settings,
             tv::tv_discover,
             tv::tv_state,
             tv::tv_start,

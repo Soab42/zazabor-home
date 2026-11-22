@@ -8,7 +8,8 @@
     "note-*",
     "clipboard-*",
     "recorder",
-    "recorder-*"
+    "recorder-*",
+    "alerts"
   ],
   "permissions": [
     "core:default",

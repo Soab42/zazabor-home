@@ -4,7 +4,9 @@ import { open as openDialog } from "../shared/dialog";
 import { clipboardCategory } from "../clipboard/settings";
 import { walletCategory } from "../modules/wallet/settings";
 import { mailCategory } from "../modules/mail/settings";
+import { alertsCategory } from "../alerts/settings";
 import { meetCategory } from "../modules/meet/settings";
+import { messagesCategory } from "../modules/messages/settings";
 import { phoneCategory } from "../modules/phone/settings";
 import { tvCategory } from "../modules/tv/settings";
 import { photoCategory } from "../modules/studio/photo/settings-page";
@@ -319,6 +321,7 @@ export class Settings {
       this.featuresCategory(),
       this.privacyCategory(),
       aiCategory(),
+      alertsCategory(this.host),
       { id: "keyboard", title: "Keyboard", icon: "terminal", section: "App", groups: keyboardGroups(config) },
       {
         id: "files", title: "Files", icon: "folder", section: "Modules",
@@ -346,6 +349,7 @@ export class Settings {
       mailCategory(this.host),
       phoneCategory(this.host),
       meetCategory(this.host),
+      messagesCategory(this.host),
       tvCategory(this.host),
       pdfCategory(),
       photoCategory(this.host),

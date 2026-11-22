@@ -59,6 +59,13 @@ pub trait Host: Send + Sync + 'static {
     fn desktop(&self, _title: &str, _body: &str, _icon: &str, _open: Value) {}
     /// The phone shared its clipboard.
     fn set_clipboard(&self, _text: &str) {}
+    /// A text arrived: shows it as an alert (a toast that can reply and call). False when the app
+    /// has no such alerts, and the desktop notification is used instead.
+    fn alert_sms(&self, _phone_id: &str, _from: &str, _number: &str, _body: &str, _thread: &Value) -> bool {
+        false
+    }
+    /// The Link app's view of a call changed (`call.state` with the phone's id).
+    fn call_state(&self, _call: &Value) {}
 }
 
 /// The link's clocks (shorter in the tests).
@@ -433,6 +440,7 @@ impl Hub {
                         call["name"] = name.into();
                     }
                 }
+                self.host.call_state(&call);
                 self.emit("phone-call-state", call);
             }
             "file.offer" => self.transfers.offered(self, link, &msg),
@@ -464,9 +472,12 @@ impl Hub {
             return;
         }
         let number = str_of(&msg, "address").unwrap_or_default();
-        let from = self.with_db(|c| store::contact_name(c, phone_id, &number)).ok().flatten().unwrap_or(number);
+        let from = self.with_db(|c| store::contact_name(c, phone_id, &number)).ok().flatten().unwrap_or_else(|| number.clone());
         let body = str_of(&msg, "body").unwrap_or_default();
         let thread = msg.get("threadId").cloned().unwrap_or_default();
+        if self.host.alert_sms(phone_id, &from, &number, &body, &thread) {
+            return;
+        }
         self.host.desktop(&from, &body, "phone", json!({"phoneId": phone_id, "tab": "messages", "threadId": thread}));
     }
 
@@ -935,6 +946,14 @@ impl Host for AppHost {
         });
     }
 
+    fn alert_sms(&self, phone_id: &str, from: &str, number: &str, body: &str, thread: &Value) -> bool {
+        crate::alerts::sms(phone_id, from, number, body, thread)
+    }
+
+    fn call_state(&self, call: &Value) {
+        crate::alerts::phone_app_call(call);
+    }
+
     fn set_clipboard(&self, text: &str) {
         let Some(app) = APP.get() else { return };
         *lock(&FROM_PHONE) = Some(text.to_string());
@@ -1043,6 +1062,21 @@ pub fn phone_named(name: &str) -> Option<(String, String, bool)> {
     let p = hub.phone_named(name)?;
     let connected = hub.is_connected(&p.phone_id);
     Some((p.phone_id, p.name, connected))
+}
+
+/// Sends a text through a phone (the alerts' inline reply and "can't talk now" messages).
+pub fn send_sms(phone_id: &str, to: Vec<String>, body: &str) -> Result<(), String> {
+    hub().ok_or("Phone Link didn't start.")?.sms_send(phone_id, to, body)
+}
+
+/// Marks a thread read, here and on the phone.
+pub fn mark_read(phone_id: &str, thread_id: Value) -> Result<(), String> {
+    hub().ok_or("Phone Link didn't start.")?.sms_read(phone_id, thread_id)
+}
+
+/// A phone connected over the Wi-Fi link now (the first), for calls that arrive without saying which.
+pub fn connected_phone() -> Option<String> {
+    hub()?.state().phones.into_iter().find(|p| p.connected).map(|p| p.phone_id)
 }
 
 /// A caller's name from the cached contacts of `phone_id` (or any paired phone).

@@ -4,8 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SettingsRow } from "../../appearance";
 import type { Config } from "../../config";
 import type { Category } from "../../shell/settings";
-import { h } from "../../ui/dom";
-import { errorText, meetApi, onMeet, type MeetState } from "./api";
+import { formatBytes, h } from "../../ui/dom";
+import { errorText, meetApi, onMeet, type AiModel, type AiSettings, type MeetState } from "./api";
+import { BANGLA_READY } from "./meeting";
 
 /**
  * Settings → Meet: the outside link (a Cloudflare quick tunnel, or the user's own domain through a
@@ -133,6 +134,59 @@ export function meetCategory(_host: { readonly config: Config }): Category {
   show.addEventListener("click", () => state && void invoke("fs_open_default", { path: state.recordingsDir }).catch(fail));
   const folderRow: SettingsRow = { label: "Recordings folder", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Recordings go to"), folder), show) };
 
+  // ---- transcripts and notes (docs/plans/meet-notes.md)
+  let ai: AiSettings = { auto: true, model: "auto", notesLang: "en", bnSubs: BANGLA_READY };
+  const saveAi = (patch: Partial<AiSettings>) => {
+    const next = { ...ai, ...patch };
+    void meetApi.setAiSettings(next).then((saved) => {
+      ai = saved;
+      problem.hidden = true;
+      drawAi();
+    }, (err) => {
+      fail(err);
+      drawAi();
+    });
+  };
+  const autoInput = h("input", { type: "checkbox", class: "switch", role: "switch" });
+  autoInput.addEventListener("change", () => saveAi({ auto: autoInput.checked }));
+  const autoRow: SettingsRow = { label: "Transcribe automatically", el: h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Transcribe and take notes automatically"), h("p", { class: "sf-hint" }, BANGLA_READY ? "When a recorded meeting ends, this PC writes who said what (Bangla or English), subtitles in both languages and notes. Nothing leaves the computer. You can turn it off for one meeting, or run it later from the meeting." : "When a recorded meeting ends, this PC writes who said what, English subtitles and notes. Nothing leaves the computer. Bangla is coming in a later update. You can turn it off for one meeting, or run it later from the meeting.")), autoInput) };
+  const choice = <T extends string>(label: string, options: [T, string][], pick: (v: T) => void) => {
+    const select = h("select", { class: "ops-input mtg-settings-select", "aria-label": label }, ...options.map(([value, name]) => h("option", { value }, name)));
+    select.addEventListener("change", () => pick(select.value as T));
+    return select;
+  };
+  const modelSelect = choice<AiSettings["model"]>("Speech model", BANGLA_READY ? [["auto", "Automatic: small, medium for Bangla"], ["small", "Small (faster, good for English)"], ["medium", "Medium (best for Bangla, slower)"]] : [["auto", "Automatic (small)"], ["small", "Small (faster)"], ["medium", "Medium (more accurate, slower)"]], (model) => saveAi({ model }));
+  const modelChoiceRow: SettingsRow = { label: "Speech model", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Speech model"), h("p", { class: "sf-hint" }, "About one minute of talk takes a few seconds (small) to a minute (medium) per speaker on this CPU.")), modelSelect) };
+  const langSelect = choice<AiSettings["notesLang"]>("Notes language", [["en", "English"], ["bn", "Bangla"], ["both", "English and Bangla"]], (notesLang) => saveAi({ notesLang }));
+  const langRow: SettingsRow = { label: "Notes language", el: h("div", { class: "sf-row plain" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Notes language"), h("p", { class: "sf-hint" }, "Subtitles are always saved in the spoken language and in English; Bangla subtitles for English speech are below.")), langSelect) };
+  const bnInput = h("input", { type: "checkbox", class: "switch", role: "switch" });
+  bnInput.addEventListener("change", () => saveAi({ bnSubs: bnInput.checked }));
+  const bnRow: SettingsRow = { label: "Bangla subtitles", el: h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Translate English speech into Bangla subtitles"), h("p", { class: "sf-hint" }, "Done by the notes model; it adds time to a long meeting.")), bnInput) };
+  const modelsBox = h("div", { class: "sf-row wide" });
+  const modelsRow: SettingsRow = { label: "Models", el: modelsBox };
+  let models: AiModel[] = [];
+  function drawModels() {
+    modelsBox.replaceChildren(h("span", { class: "sf-label" }, "Models on this PC"), h("p", { class: "sf-hint" }, "Downloaded once, when the first meeting needs them, and checked against a fixed checksum."),
+      ...models.map((m) => {
+        const button = m.installed
+          ? h("button", { class: "btn small", type: "button", onclick: () => void meetApi.aiModelRemove(m.id).then(refreshModels, fail) }, "Delete")
+          : m.downloading
+            ? h("button", { class: "btn small", type: "button", onclick: () => void meetApi.aiModelCancel(m.id).then(refreshModels, fail) }, `Pause (${Math.round((m.partial / m.bytes) * 100)}%)`)
+            : h("button", { class: "btn small primary", type: "button", onclick: () => void meetApi.aiModelDownload(m.id).then(refreshModels, fail) }, `Download ${formatBytes(m.bytes)}`);
+        return h("div", { class: "pl-settings-buttons mtg-model" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, m.label), h("p", { class: "sf-hint" }, m.installed ? `Installed · ${m.note}` : m.error ?? m.note)), button);
+      }));
+  }
+  const refreshModels = () => meetApi.aiModels().then((list) => {
+    models = list;
+    drawModels();
+  }, () => undefined);
+  function drawAi() {
+    autoInput.checked = ai.auto;
+    modelSelect.value = ai.model;
+    langSelect.value = ai.notesLang;
+    bnInput.checked = ai.bnSubs;
+  }
+
   // ---- connection
   const field = (placeholder: string, label: string, type = "text") => h("input", { class: "ops-input mtg-settings-input", type, placeholder, spellcheck: false, autocomplete: "off", "aria-label": label });
   const stun = h("textarea", { class: "ops-input mtg-settings-stun", rows: 3, spellcheck: false, placeholder: "stun:stun.example.com:3478", "aria-label": "STUN servers" });
@@ -186,6 +240,7 @@ export function meetCategory(_host: { readonly config: Config }): Category {
     turnPass.value = s.turn?.credential ?? "";
   }
   void onMeet("meet-changed", () => void meetApi.state().then(draw, () => undefined)).catch(() => undefined);
+  void onMeet("meet-ai", (e) => e.models && void refreshModels()).catch(() => undefined);
 
   return {
     id: "meet", title: "Meet", icon: "video", section: "Modules",
@@ -193,11 +248,17 @@ export function meetCategory(_host: { readonly config: Config }): Category {
     groups: [
       { title: "Outside link", rows: [tunnelRow, modeRow, domainRow, addressRow] },
       { title: "Recordings", rows: [folderRow] },
+      { title: "Transcripts and notes", rows: BANGLA_READY ? [autoRow, modelChoiceRow, langRow, bnRow, modelsRow] : [autoRow, modelChoiceRow, modelsRow] },
       { title: "Connection", rows: [stunRow, turnRow] },
     ],
     refresh() {
       problem.hidden = true;
       void meetApi.state().then(draw, () => draw(null));
+      void meetApi.aiSettings().then((s) => {
+        ai = s;
+        drawAi();
+      }, () => undefined);
+      void refreshModels();
     },
   };
 }

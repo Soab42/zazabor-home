@@ -27,6 +27,8 @@ pub struct Specials {
     pub eot: u32,
     pub sot: u32,
     pub transcribe: u32,
+    /// Speech in any language to English text.
+    pub translate: u32,
     pub no_speech: u32,
     pub no_timestamps: u32,
     /// `<|0.00|>`; later timestamps follow.
@@ -39,7 +41,7 @@ impl Specials {
             return Err("This captions model only knows English; Zazabor Home uses the multilingual ones.".into());
         }
         let dt = (n_vocab - 51765 - 1) as u32 - 98;
-        Ok(Specials { eot: 50257, sot: 50258, transcribe: 50358 + dt, no_speech: 50361 + dt, no_timestamps: 50362 + dt, begin: 50363 + dt })
+        Ok(Specials { eot: 50257, sot: 50258, transcribe: 50358 + dt, translate: 50357 + dt, no_speech: 50361 + dt, no_timestamps: 50362 + dt, begin: 50363 + dt })
     }
 
     pub fn language(&self, code: &str) -> Option<u32> {
@@ -56,6 +58,8 @@ pub struct Word {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Segment {
+    /// The language spoken in this window (Whisper's code), whatever the text was translated into.
+    pub lang: String,
     pub start: f64,
     pub end: f64,
     pub text: String,
@@ -225,10 +229,10 @@ struct Window {
 
 /// Decodes one window: greedily at temperature 0, else sampling from the softened
 /// distribution (seeded, so a run is repeatable).
-fn decode_window(model: &mut Whisper, audio: &candle_core::Tensor, sp: &Specials, lang_token: u32, temperature: f32, seed: u64, cancel: &AtomicBool) -> Result<Window, String> {
+fn decode_window(model: &mut Whisper, audio: &candle_core::Tensor, sp: &Specials, lang_token: u32, task: u32, temperature: f32, seed: u64, cancel: &AtomicBool) -> Result<Window, String> {
     let err = |e: candle_core::Error| format!("Captions failed: {e}");
     model.reset();
-    let prompt = [sp.sot, lang_token, sp.transcribe];
+    let prompt = [sp.sot, lang_token, task];
     let mut logits_now = model.decode(&prompt, audio, &[0, prompt.len() - 1]).map_err(err)?;
     let first = logits_now.remove(0);
     let no_speech = log_softmax(&first)[sp.no_speech as usize].exp();
@@ -285,9 +289,23 @@ fn sample(lp: &[f32], temperature: f32, u: f64) -> usize {
     argmax(lp)
 }
 
+/// How to decode: the language (None detects it), whether to translate into English, and whether
+/// to detect the language again in every window (code-switching), among `candidates` if given.
+#[derive(Debug, Clone, Default)]
+pub struct Options<'a> {
+    pub language: Option<&'a str>,
+    pub translate: bool,
+    pub per_window: bool,
+    pub candidates: &'a [&'a str],
+}
+
 /// Greedy decoding of whole audio (16 kHz mono). `language` None detects it from the first
 /// window with speech. `progress` gets 0…1.
 pub fn transcribe(model: &mut Whisper, filters: &[f32], vocab: &[Vec<u8>], pcm: &[f32], language: Option<&str>, progress: &dyn Fn(f64), cancel: &AtomicBool) -> Result<Transcript, String> {
+    transcribe_with(model, filters, vocab, pcm, &Options { language, ..Default::default() }, progress, cancel)
+}
+
+pub fn transcribe_with(model: &mut Whisper, filters: &[f32], vocab: &[Vec<u8>], pcm: &[f32], opts: &Options, progress: &dyn Fn(f64), cancel: &AtomicBool) -> Result<Transcript, String> {
     let sp = Specials::for_vocab(model.hp.n_vocab)?;
     let tok = Tokenizer { vocab, specials: sp };
     let n_mels = model.hp.n_mels;
@@ -297,7 +315,8 @@ pub fn transcribe(model: &mut Whisper, filters: &[f32], vocab: &[Vec<u8>], pcm: 
     let (spec, frames) = mel::log_mel(&padded, filters, n_mels);
     let content_frames = pcm.len() / mel::HOP;
     let err = |e: candle_core::Error| format!("Captions failed: {e}");
-    let mut language = language.map(str::to_owned);
+    let mut language = opts.language.map(str::to_owned);
+    let task = if opts.translate { sp.translate } else { sp.transcribe };
     let mut segments: Vec<Segment> = Vec::new();
     let mut seek = 0usize;
     let window_seconds = WINDOW_FRAMES as f64 * mel::HOP as f64 / mel::SAMPLE_RATE as f64;
@@ -314,11 +333,11 @@ pub fn transcribe(model: &mut Whisper, filters: &[f32], vocab: &[Vec<u8>], pcm: 
         let audio = model.encode(&window, WINDOW_FRAMES).map_err(err)?;
         t_encode += clock.elapsed().as_secs_f64();
         let clock = std::time::Instant::now();
-        // The language, from the first window, once.
-        if language.is_none() {
+        // The language, from the first window, once (or from every window).
+        if language.is_none() || (opts.per_window && opts.language.is_none()) {
             model.reset();
             let logits = model.decode(&[sp.sot], &audio, &[0]).map_err(err)?.remove(0);
-            let best = LANGUAGES.iter().enumerate().max_by(|a, b| {
+            let best = LANGUAGES.iter().enumerate().filter(|(_, l)| opts.candidates.is_empty() || opts.candidates.contains(l)).max_by(|a, b| {
                 let la = logits[(sp.sot + 1 + a.0 as u32) as usize];
                 let lb = logits[(sp.sot + 1 + b.0 as u32) as usize];
                 la.total_cmp(&lb)
@@ -333,7 +352,7 @@ pub fn transcribe(model: &mut Whisper, filters: &[f32], vocab: &[Vec<u8>], pcm: 
         let mut attempt = None;
         for (i, temperature) in [0.0f32, 0.4, 0.8].into_iter().enumerate() {
             let seed = 0x9e37_79b9_7f4a_7c15u64 ^ (seek as u64).wrapping_mul(0x2545_f491_4f6c_dd1d) ^ i as u64;
-            let w = decode_window(model, &audio, &sp, lang_token, temperature, seed, cancel)?;
+            let w = decode_window(model, &audio, &sp, lang_token, task, temperature, seed, cancel)?;
             steps += w.tokens.len() + 1;
             let done = !w.looped;
             attempt = Some(w);
@@ -360,7 +379,7 @@ pub fn transcribe(model: &mut Whisper, filters: &[f32], vocab: &[Vec<u8>], pcm: 
             if segments.last().is_some_and(|l| l.text == text && (s - l.end).abs() < 1.0) {
                 continue;
             }
-            segments.push(Segment { start: s, end: e, words: spread_words(s, e, &text), text });
+            segments.push(Segment { lang: lang.to_string(), start: s, end: e, words: spread_words(s, e, &text), text });
         }
         let step = ((advance.max(TIME_STEP)) * mel::SAMPLE_RATE as f64 / mel::HOP as f64).round() as usize;
         seek += step.clamp(1, WINDOW_FRAMES);

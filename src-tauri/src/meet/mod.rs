@@ -8,12 +8,14 @@
 //! The `Hub` holds everything and reaches the app only through `Host`, so the tests run it with
 //! no window.
 
+pub mod ai;
 pub mod browser;
 pub mod invite;
 pub mod room;
 pub mod secret;
 pub mod server;
 pub mod store;
+pub mod transcript;
 pub mod tunnel;
 
 use std::collections::{HashMap, HashSet};
@@ -115,6 +117,8 @@ pub struct Hub {
     db: Mutex<Connection>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     recs: Mutex<HashMap<String, Arc<Mutex<RecFile>>>>,
+    /// Transcripts and notes (`ai.rs`): open track files and running jobs.
+    ai: ai::State,
     pub data_dir: PathBuf,
     rec_dir: Mutex<PathBuf>,
     host_token: String,
@@ -135,6 +139,7 @@ impl Hub {
             db: Mutex::new(conn),
             rooms: Mutex::new(HashMap::new()),
             recs: Mutex::new(HashMap::new()),
+            ai: ai::State::default(),
             data_dir,
             rec_dir: Mutex::new(rec_dir),
             host_token: store::hex(&store::random_bytes::<32>()),
@@ -508,6 +513,12 @@ impl Hub {
         if path.parent() == Some(self.rec_dir().as_path()) {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(room::chat_path(&path));
+            // Its tracks, transcript, subtitles and notes go with it.
+            self.ai_cancel(id);
+            let _ = std::fs::remove_dir_all(ai::paths(&path).tracks);
+            for f in ai::extra_files(&path) {
+                let _ = std::fs::remove_file(f);
+            }
         }
         lock(&self.recs).remove(id);
         self.with_db(|c| store::delete_recording(c, id))?;
@@ -607,6 +618,7 @@ impl Hub {
     /// Every 30 s: five minutes before a meeting, the tunnel is made sure of, the invitees get
     /// the new link if it changed, and the host gets a notification.
     pub fn tick(self: &Arc<Self>) {
+        self.ai_tick();
         let now = now_ms();
         let Ok(all) = self.with_db(|c| store::all(c)) else { return };
         for m in all {
@@ -900,6 +912,79 @@ pub async fn meet_recordings() -> Result<Vec<Recording>> {
 #[tauri::command]
 pub async fn meet_recording_delete(id: String) -> Result<()> {
     blocking(move |hub| hub.delete_recording(&id)).await
+}
+
+// ---- transcripts and notes (ai.rs)
+
+#[tauri::command]
+pub async fn meet_ai_settings() -> Result<ai::Settings> {
+    blocking(|hub| Ok(hub.ai_settings())).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_set_settings(settings: ai::Settings) -> Result<ai::Settings> {
+    blocking(move |hub| hub.set_ai_settings(&settings)).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_status() -> Result<Vec<ai::Info>> {
+    blocking(|hub| hub.ai_infos()).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_models() -> Result<Vec<crate::ai::models::Status>> {
+    blocking(|hub| Ok(hub.ai_models())).await
+}
+
+/// Starts (or continues) a model download; the page asked the user about its size first.
+#[tauri::command]
+pub async fn meet_ai_model_download(id: String) -> Result<()> {
+    blocking(move |hub| hub.ai_model_download(&id)).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_model_cancel(id: String) -> Result<()> {
+    crate::ai::models::cancel(&id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn meet_ai_model_remove(id: String) -> Result<()> {
+    blocking(move |hub| crate::ai::models::remove(&hub.data_dir, &id)).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_run(id: String, options: Option<ai::RunOptions>) -> Result<()> {
+    blocking(move |hub| hub.ai_start(&id, options.unwrap_or_default())).await
+}
+
+#[tauri::command]
+pub async fn meet_ai_cancel(id: String) -> Result<()> {
+    blocking(move |hub| {
+        hub.ai_cancel(&id);
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn meet_ai_off(id: String, off: bool) -> Result<()> {
+    blocking(move |hub| hub.ai_off(&id, off)).await
+}
+
+#[tauri::command]
+pub async fn meet_transcript(id: String) -> Result<transcript::Doc> {
+    blocking(move |hub| hub.transcript(&id)).await
+}
+
+#[tauri::command]
+pub async fn meet_notes(id: String) -> Result<Option<Value>> {
+    blocking(move |hub| hub.notes(&id)).await
+}
+
+#[tauri::command]
+pub async fn meet_notes_save(id: String, notes: Value) -> Result<()> {
+    blocking(move |hub| hub.notes_save(&id, notes)).await
 }
 
 #[tauri::command]
