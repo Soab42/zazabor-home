@@ -35,6 +35,8 @@ impl Drop for Fixture {
 }
 
 fn fixture(name: &str) -> Fixture {
+    // Tokens go to a file in the test's folder, never the real keyring.
+    std::env::set_var("ZAZABOR_MEET_NO_KEYRING", "1");
     let dir = std::env::temp_dir().join(format!("zazabor-meet-test-{name}-{}", store::new_id()));
     std::fs::create_dir_all(&dir).unwrap();
     let events = Events::default();
@@ -476,6 +478,135 @@ fn names_and_file_names_are_cleaned() {
     assert_eq!(room::clean_name(&"x".repeat(100)).len(), room::MAX_NAME);
     assert!(stamp_for_file(now_ms()).len() == 16);
     assert!(when_text(0).contains("1970") || when_text(0).contains("1969"));
+}
+
+const TOKEN: &str = "eyJhIjoiZmFrZSIsInQiOiJ0ZXN0IiwicyI6Im5vdC1hLXJlYWwtc2VjcmV0In0=";
+
+#[test]
+fn hostnames_must_be_plain_dns_names() {
+    assert_eq!(clean_hostname("  Meet.Example.COM ").unwrap(), "meet.example.com");
+    assert_eq!(clean_hostname("meet.example.com.").unwrap(), "meet.example.com");
+    assert_eq!(clean_hostname("a-b.c1.example.co.uk").unwrap(), "a-b.c1.example.co.uk");
+    for bad in ["", "meet", "https://meet.example.com", "meet.example.com/path", "meet.example.com:8080", "meet .example.com", "-a.example.com", "a-.example.com", "a..example.com", "under_score.example.com", "192.168.1.5", "user@meet.example.com", "meet.example.com?x=1", &format!("{}.example.com", "a".repeat(64))] {
+        assert!(clean_hostname(bad).is_err(), "{bad:?} should be refused");
+    }
+}
+
+#[test]
+fn the_token_is_cleaned_and_checked() {
+    assert_eq!(clean_token(&format!("  {TOKEN}\n")).unwrap(), TOKEN);
+    assert_eq!(clean_token(&format!("sudo cloudflared service install {TOKEN}")).unwrap(), TOKEN);
+    assert!(clean_token("short").is_err());
+    assert!(clean_token("has spaces but ends with tiny").is_err());
+    assert!(clean_token(&"x$".repeat(20)).is_err());
+}
+
+#[test]
+fn the_domain_mode_is_saved_and_the_token_never_comes_back() {
+    let f = fixture("domain");
+    let s = f.hub.state();
+    assert_eq!((s.mode.as_str(), s.hostname.as_str(), s.token_set), ("quick", "", false));
+    // Domain mode needs a hostname and a token.
+    assert!(f.hub.set_domain("domain", None, None, false).is_err());
+    assert!(f.hub.set_domain("domain", Some("meet.example.com".into()), None, false).is_err());
+    assert!(f.hub.set_domain("domain", Some("https://meet.example.com".into()), Some(TOKEN.into()), false).is_err());
+    assert!(f.hub.set_domain("nonsense", None, None, false).is_err());
+    // Saving works on a free port 47230 or says why not; either way the token isn't in the state.
+    let saved = f.hub.set_domain("quick", Some("Meet.Example.com".into()), Some(TOKEN.into()), false).unwrap();
+    assert_eq!((saved.mode.as_str(), saved.hostname.as_str(), saved.token_set), ("quick", "meet.example.com", true));
+    assert!(!serde_json::to_string(&saved).unwrap().contains(TOKEN));
+    assert!(!serde_json::to_string(&f.hub.state()).unwrap().contains(TOKEN));
+    assert_eq!(secret::get(&f.dir).as_deref(), Some(TOKEN));
+    // The token file is private to the user.
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(f.dir.join("secrets/tunnel-token")).unwrap().permissions().mode() & 0o777, 0o600);
+    // Kept when only the hostname changes; gone when cleared.
+    let kept = f.hub.set_domain("quick", Some("talk.example.org".into()), None, false).unwrap();
+    assert!(kept.token_set && kept.hostname == "talk.example.org");
+    let cleared = f.hub.set_domain("quick", None, None, true).unwrap();
+    assert!(!cleared.token_set);
+    assert_eq!(secret::get(&f.dir), None);
+    // The tunnel is told the token only through its environment.
+    f.hub.with_db(|c| store::set_meta(c, "mode", "domain")).unwrap();
+    assert!(f.hub.tunnel_spec(1).is_err(), "no token saved");
+    secret::set(&f.dir, TOKEN).unwrap();
+    f.hub.with_db(|c| store::set_meta(c, "hostname", "meet.example.com")).unwrap();
+    match f.hub.tunnel_spec(1).unwrap() {
+        tunnel::Spec::Domain { hostname, token } => assert_eq!((hostname.as_str(), token.as_str()), ("meet.example.com", TOKEN)),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_domain_needs_its_exact_port_but_quick_takes_the_next_free_one() {
+    // Another program holds the port.
+    let held = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let busy = held.local_addr().unwrap().port();
+    let dir = std::env::temp_dir().join(format!("zazabor-meet-test-exact-{}", store::new_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let hub = Hub::new(Box::new(Events::default()), store::open(&dir.join("meet.db")).unwrap(), dir.clone(), dir.join("rec")).unwrap();
+    let f = Fixture { hub, port: 0, dir, events: Events::default() };
+    let err = f.hub.ensure_port_for(true, busy).unwrap_err();
+    assert!(err.contains(&busy.to_string()) && err.contains("in use"), "{err}");
+    assert_eq!(f.hub.port(), None);
+    // The page sees it as the tunnel's error once the domain is on.
+    f.hub.with_db(|c| store::set_meta(c, "mode", "domain")).unwrap();
+    let t = f.hub.state().tunnel;
+    assert_eq!(t.state, "error");
+    assert!(t.error.unwrap().contains("in use"));
+    f.hub.with_db(|c| store::set_meta(c, "mode", "quick")).unwrap();
+    // Quick mode: the next free port.
+    let next = f.hub.ensure_port_for(false, busy).unwrap();
+    assert_ne!(next, busy);
+    assert!((busy + 1..busy + 30).contains(&next));
+    drop(held);
+    // Domain mode while the server sits elsewhere: starts one on exactly the port when it's free.
+    let free = { let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap(); l.local_addr().unwrap().port() };
+    assert_eq!(f.hub.ensure_port_for(true, free).unwrap(), free);
+    assert_eq!(f.hub.port(), Some(free));
+    assert!(f.hub.state().tunnel.error.is_none());
+}
+
+#[test]
+fn health_says_whether_this_pc_answers() {
+    let f = fixture("health");
+    let (head, body) = http(f.port, "GET /api/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", b"");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v, json!({"app": "zazabor-meet", "nonce": f.hub.nonce()}));
+    assert!(!body.contains(f.hub.host_token()));
+    let url = format!("http://127.0.0.1:{}/api/health", f.port);
+    assert_eq!(check_url(&url, f.hub.nonce(), "meet.example.com").result, "this-pc");
+    assert_eq!(check_url(&url, "another-nonce", "meet.example.com").result, "other");
+    // Nothing listens there.
+    let dead = { let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap(); l.local_addr().unwrap().port() };
+    assert_eq!(check_url(&format!("http://127.0.0.1:{dead}/api/health"), "n", "meet.example.com").result, "unreachable");
+    // What Cloudflare and other servers answer.
+    let nonce = "n1";
+    assert_eq!(classify_health(502, "<html>Bad gateway</html>", nonce, "m.example.com").result, "unreachable");
+    assert_eq!(classify_health(530, "error code: 1033", nonce, "m.example.com").result, "unreachable");
+    assert_eq!(classify_health(200, "<html>Welcome</html>", nonce, "m.example.com").result, "other");
+    assert_eq!(classify_health(404, "", nonce, "m.example.com").result, "other");
+    assert_eq!(classify_health(200, r#"{"app":"zazabor-meet","nonce":"n1"}"#, nonce, "m.example.com").result, "this-pc");
+}
+
+#[test]
+fn a_stable_domain_link_is_never_resent_at_start_time() {
+    let f = fixture("resend");
+    let id = f.hub.create("Weekly", "meeting", Some(now_ms() + 120_000), 30, false, true, vec![InviteeIn { email: "a@example.com".into(), name: "A".into() }]).unwrap().id;
+    let m = f.hub.with_db(|c| store::get(c, &id)).unwrap();
+    let link = format!("https://meet.example.com/m/{}", m.code);
+    // The domain: same address as the invitation, so nobody is mailed again.
+    assert!(!needs_resend(&m, &link, &link));
+    // A quick tunnel that restarted has a new address.
+    assert!(needs_resend(&m, &format!("https://old-words.trycloudflare.com/m/{}", m.code), &format!("https://new-words.trycloudflare.com/m/{}", m.code)));
+    // Already mailed the start-time link, or nobody to mail.
+    let mut mailed = m.clone();
+    mailed.started_mail = true;
+    assert!(!needs_resend(&mailed, "https://a.trycloudflare.com/m/x", "https://b.trycloudflare.com/m/x"));
+    let mut nobody = m;
+    nobody.invitees.clear();
+    assert!(!needs_resend(&nobody, "https://a.trycloudflare.com/m/x", "https://b.trycloudflare.com/m/x"));
 }
 
 /// For the browser checks: serves a meeting until `MEET_LINGER` seconds pass (default 600) and

@@ -85,6 +85,8 @@ tungstenite = "0.30"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2.0", features = ["v2_40"] }
+# Messages panels: reads the strings the pages post (src/messages).
+javascriptcore-rs = "1.1"
 # Clipboard history (Win+V): GTK's clipboard and XTest's Ctrl+V. Both already come with Tauri.
 gtk = "0.18"
 x11-dl = "2.21"

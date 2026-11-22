@@ -15,6 +15,7 @@ mod imaging;
 mod lock;
 mod mail;
 mod meet;
+mod messages;
 mod migrate;
 mod music;
 mod notes;
@@ -427,6 +428,7 @@ pub fn run() {
             cast::init(app.handle().clone(), app.path().app_data_dir()?);
             phonelink::init(app.handle().clone(), app.path().app_data_dir()?);
             meet::init(app.handle().clone(), app.path().app_data_dir()?);
+            messages::init(app.handle().clone(), app.path().app_data_dir()?);
             tv::init(app.handle().clone(), app.path().app_data_dir()?, app.path().app_cache_dir()?);
             phonelink::hfp::init(app.handle().clone());
             // A quick note (`--new-note`) starts with only the note, the clipboard (`--clipboard`)
@@ -864,6 +866,15 @@ pub fn run() {
             meet::meet_recording_delete,
             meet::meet_tunnel,
             meet::meet_settings,
+            meet::meet_domain,
+            meet::meet_domain_test,
+            messages::msg_create,
+            messages::msg_show,
+            messages::msg_hide,
+            messages::msg_rect,
+            messages::msg_reload,
+            messages::msg_zoom,
+            messages::msg_destroy,
             tv::tv_discover,
             tv::tv_state,
             tv::tv_start,

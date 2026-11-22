@@ -7887,6 +7887,7 @@ dependencies = [
  "imap",
  "imap-proto",
  "ironcalc",
+ "javascriptcore-rs",
  "jpeg-decoder",
  "kamadak-exif",
  "lettre",

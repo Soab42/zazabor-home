@@ -1,5 +1,5 @@
 import type { Account, Address, Overview } from "../mail/api";
-import type { Events, MeetMock, MeetState, Meeting, MeetingInput, Recording } from "./api";
+import type { DomainCheck, Events, MeetMock, MeetState, Meeting, MeetingInput, Recording } from "./api";
 
 /**
  * A pretend backend for working on the Meet section without one (dev builds only; see api.ts).
@@ -28,7 +28,11 @@ export function createMock(mode: string): MeetMock {
     tunnel: mode === "bare" ? { state: "off", url: null, error: null } : { state: "on", url: "https://quiet-harbor-glass-7f3.trycloudflare.com", error: null },
     browser: "Google Chrome", recordingsDir: "/home/soab/Videos/Zazabor Meetings",
     stun: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"], turn: null,
+    mode: "quick", hostname: "", tokenSet: false,
   };
+  const quickUrl = "https://quiet-harbor-glass-7f3.trycloudflare.com";
+  // The address guests get: the domain when it's on, else the quick tunnel's random one.
+  const address = () => (state.mode === "domain" ? `https://${state.hostname}` : quickUrl);
 
   const base = { kind: "meeting" as const, autoRecord: true, lobby: true, hostIn: false, people: 0, waiting: 0, recording: false, live: false };
   let meetings: Meeting[] = mode === "bare" ? [] : [
@@ -100,7 +104,7 @@ export function createMock(mode: string): MeetMock {
         }
         case "meet_join_url": {
           if (state.tunnel.state !== "on") {
-            state.tunnel = { state: "on", url: "https://quiet-harbor-glass-7f3.trycloudflare.com", error: null };
+            state.tunnel = { state: "on", url: address(), error: null };
             changed();
           }
           return wait(`${state.tunnel.url}/m/${find(a.id).code}`, 400);
@@ -133,13 +137,35 @@ export function createMock(mode: string): MeetMock {
           return wait(undefined);
         }
         case "meet_tunnel":
-          state.tunnel = a.on ? { state: "on", url: "https://quiet-harbor-glass-7f3.trycloudflare.com", error: null } : { state: "off", url: null, error: null };
+          state.tunnel = a.on ? { state: "on", url: address(), error: null } : { state: "off", url: null, error: null };
           changed();
           return wait(state, 500);
         case "meet_settings":
           state.stun = a.stun as string[];
           state.turn = a.turn as MeetState["turn"];
           return wait(state);
+        case "meet_domain": {
+          const mode = a.mode === "domain" ? "domain" : "quick";
+          const hostname = typeof a.hostname === "string" && a.hostname.trim() ? a.hostname.trim().toLowerCase() : state.hostname;
+          if (mode === "domain" && !/^([a-z0-9-]+\.)+[a-z]{2,}$/.test(hostname)) throw new Error(`“${hostname}” isn't a hostname. Use just the name, like meet.example.com.`);
+          const token = typeof a.token === "string" && a.token.trim() ? a.token.trim() : null;
+          if (token && token.length < 20) throw new Error("That doesn't look like a tunnel token. Copy the long string after --token in Cloudflare's install command.");
+          if (a.clearToken) state.tokenSet = false;
+          if (token) state.tokenSet = true;
+          if (mode === "domain" && !state.tokenSet) throw new Error("Paste the tunnel token first.");
+          state.mode = mode;
+          state.hostname = hostname;
+          if (state.tunnel.state === "on") state.tunnel.url = address();
+          changed();
+          return wait(state, 300);
+        }
+        case "meet_domain_test": {
+          // The hostname decides what the mock finds: "other.*" another server, "down.*" a tunnel that isn't connected.
+          const result: DomainCheck = state.hostname.startsWith("other.") ? { result: "other", message: `${state.hostname} answers (status 200), but it isn't this PC's meeting server. Check the tunnel's public hostname points at this tunnel.` }
+            : state.hostname.startsWith("down.") ? { result: "unreachable", message: `Cloudflare answers for ${state.hostname} (error 502), but nothing is behind it: the tunnel isn't connected, or its service URL isn't localhost:47230. Wait a few seconds and try again.` }
+            : { result: "this-pc", message: `It works: guests who open ${state.hostname} reach this PC.` };
+          return wait(result, 700);
+        }
         case "mail_overview": return wait({ accounts, drafts: 0, colors: [] } satisfies Overview);
         case "mail_contacts": {
           const p = String(a.prefix ?? "").toLowerCase();

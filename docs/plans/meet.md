@@ -241,3 +241,19 @@ backoff and sends `meet-changed`. It stops when Zazabor quits.
 - Each peer connection carries three transceivers in a fixed order (audio, camera, screen), so a screen share needs no renegotiation.
 - `meet_join_url` returns an error (not a LAN link) when the tunnel isn't up after 20 s.
 - Commands take plain camelCase arguments (`startsAt`, `autoRecord`, `accountId`), not one wrapper object.
+- **My own domain (a named Cloudflare tunnel).** `MeetState` also carries `mode` ("quick" | "domain"), `hostname` and
+  `tokenSet`. `meet_domain { mode, hostname?, token?, clearToken? }` saves them (meta keys `mode`, `hostname`, `token_set`)
+  and restarts the tunnel if it was on; omitted fields keep what's saved. The token is stored like Mail's passwords
+  (keyring, else a 0600 file in the data folder; `meet/secret.rs`) and never comes back to the page, the logs or the
+  process arguments: `cloudflared tunnel --no-autoupdate run` gets it as `TUNNEL_TOKEN`. The tunnel is "on" when stderr
+  shows `Registered tunnel connection`, and the address is then `https://<hostname>`; invalid token, deleted tunnel and
+  no connectivity get plain messages.
+- In domain mode the server must listen on exactly 47230 (the Cloudflare public hostname points at `localhost:47230`); if
+  it's taken the tunnel shows an error and saving the domain is refused. Quick mode still takes the next free port.
+- With a stable address the scheduled-meeting start-time re-send never fires (`needs_resend`: the address equals the one
+  invited with).
+- `GET /api/health` -> `{app: "zazabor-meet", nonce}` (the nonce is random per run). `meet_domain_test` fetches
+  `https://<hostname>/api/health` from Rust (10 s) and returns `{result: "this-pc" | "other" | "unreachable", message}`.
+- Setup for the user: a Cloudflare account with the domain's DNS on Cloudflare; Zero Trust -> Networks -> Tunnels -> Create a
+  tunnel -> Cloudflared, named `zazabor-meet`; copy the token after `--token`; Public Hostname: subdomain `meet`, your
+  domain, type HTTP, URL `localhost:47230`. In Zazabor: Settings -> Meet -> My own domain, hostname, token, Save, Test.

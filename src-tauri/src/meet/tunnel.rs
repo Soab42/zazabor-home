@@ -5,6 +5,10 @@
 //! `cloudflared` is looked for on PATH, in ~/.local/bin and in Zazabor's data folder; failing
 //! that it's downloaded from the latest GitHub release, checked against the SHA-256 the release
 //! lists, and kept in the data folder. A tunnel that dies is restarted with a growing wait.
+//!
+//! Two kinds: the quick tunnel (random address, changes on every start) and the user's own
+//! domain through a named, token-based tunnel (`cloudflared tunnel run`, the token in the
+//! `TUNNEL_TOKEN` environment variable so no other process sees it in the arguments).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +27,32 @@ pub struct Info {
     pub state: String,
     pub url: Option<String>,
     pub error: Option<String>,
+}
+
+/// What to run. The token never leaves this value except into the child's environment.
+#[derive(Clone)]
+pub enum Spec {
+    Quick { port: u16 },
+    Domain { hostname: String, token: String },
+}
+
+impl std::fmt::Debug for Spec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Spec::Quick { port } => write!(f, "Quick({port})"),
+            Spec::Domain { hostname, .. } => write!(f, "Domain({hostname}, token hidden)"),
+        }
+    }
+}
+
+/// What a line of cloudflared's output means.
+#[derive(Debug, PartialEq)]
+pub enum Seen {
+    /// The tunnel is up at this address.
+    Url(String),
+    /// Something went wrong; `known` when the text is one of our own plain-language messages.
+    Problem { text: String, known: bool },
+    Nothing,
 }
 
 pub struct Tunnel {
@@ -54,6 +84,57 @@ pub fn parse_url(line: &str) -> Option<String> {
     Some(format!("https://{host}"))
 }
 
+/// A line of a named tunnel's output: "Registered tunnel connection" means it's up at `https://<hostname>`.
+pub fn read_domain_line(hostname: &str, line: &str) -> Seen {
+    if line.contains("Registered tunnel connection") {
+        return Seen::Url(format!("https://{hostname}"));
+    }
+    let lower = line.to_ascii_lowercase();
+    let known = |text: &str| Seen::Problem { text: text.into(), known: true };
+    if lower.contains("token is not valid") || lower.contains("invalid tunnel secret") || lower.contains("error decoding tunnel token") || lower.contains("invalid tunnel token") {
+        return known("Cloudflare doesn't accept this token. Copy it again from the tunnel's install command.");
+    }
+    if lower.contains("tunnel not found") || lower.contains("has been deleted") || lower.contains("tunnel was deleted") {
+        return known("Cloudflare says this tunnel no longer exists. Create it again and paste its new token.");
+    }
+    if lower.contains("no such host") || lower.contains("network is unreachable") || lower.contains("i/o timeout") || lower.contains("unable to establish connection with cloudflare") || lower.contains("failed to dial") {
+        return known("Can't reach Cloudflare. Check the internet connection.");
+    }
+    if lower.contains("unable to reach the origin service") {
+        return known("Cloudflare reached this PC, but the meeting server didn't answer. Its URL must be localhost:47230.");
+    }
+    if line.contains("ERR") {
+        return Seen::Problem { text: line.chars().take(200).collect(), known: false };
+    }
+    Seen::Nothing
+}
+
+fn read_line(spec: &Spec, line: &str) -> Seen {
+    match spec {
+        Spec::Quick { .. } => match parse_url(line) {
+            Some(url) => Seen::Url(url),
+            None if line.contains("ERR") => Seen::Problem { text: line.chars().take(200).collect(), known: false },
+            None => Seen::Nothing,
+        },
+        Spec::Domain { hostname, .. } => read_domain_line(hostname, line),
+    }
+}
+
+/// The cloudflared command for `spec`; a named tunnel gets its token through the environment.
+pub fn command(binary: &Path, spec: &Spec) -> Command {
+    let mut cmd = Command::new(binary);
+    match spec {
+        Spec::Quick { port } => {
+            cmd.args(["tunnel", "--no-autoupdate", "--url", &format!("http://127.0.0.1:{port}")]).env_remove("TUNNEL_TOKEN");
+        }
+        Spec::Domain { token, .. } => {
+            cmd.args(["tunnel", "--no-autoupdate", "run"]).env("TUNNEL_TOKEN", token);
+        }
+    }
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    cmd
+}
+
 impl Tunnel {
     pub fn new() -> Arc<Tunnel> {
         Arc::new(Tunnel { info: Mutex::new(Info { state: "off".into(), url: None, error: None }), want: AtomicBool::new(false), generation: AtomicU64::new(0), pid: AtomicU32::new(0) })
@@ -73,14 +154,14 @@ impl Tunnel {
     }
 
     /// Starts the tunnel in the background (nothing happens if it is already wanted).
-    pub fn start(self: &Arc<Self>, port: u16, dir: PathBuf, changed: Arc<dyn Fn() + Send + Sync>) {
+    pub fn start(self: &Arc<Self>, spec: Spec, dir: PathBuf, changed: Arc<dyn Fn() + Send + Sync>) {
         if self.want.swap(true, Ordering::SeqCst) {
             return;
         }
         let mine = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let this = self.clone();
         self.set("starting", None, None, &changed);
-        std::thread::spawn(move || this.supervise(mine, port, &dir, &changed));
+        std::thread::spawn(move || this.supervise(mine, &spec, &dir, &changed));
     }
 
     pub fn stop(&self) {
@@ -116,7 +197,7 @@ impl Tunnel {
         self.want.load(Ordering::SeqCst) && self.generation.load(Ordering::SeqCst) == mine
     }
 
-    fn supervise(&self, mine: u64, port: u16, dir: &Path, changed: &Arc<dyn Fn() + Send + Sync>) {
+    fn supervise(&self, mine: u64, spec: &Spec, dir: &Path, changed: &Arc<dyn Fn() + Send + Sync>) {
         let mut wait = Duration::from_secs(2);
         while self.current(mine) {
             let binary = match ensure_binary(dir) {
@@ -131,8 +212,7 @@ impl Tunnel {
             if !self.current(mine) {
                 break;
             }
-            let mut cmd = Command::new(&binary);
-            cmd.args(["tunnel", "--no-autoupdate", "--url", &format!("http://127.0.0.1:{port}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+            let mut cmd = command(&binary, spec);
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::process::CommandExt;
@@ -163,12 +243,23 @@ impl Tunnel {
             self.set("starting", None, None, changed);
             let began = Instant::now();
             let mut last_error = String::new();
+            let mut last_known = false;
             if let Some(stderr) = child.stderr.take() {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    if let Some(url) = parse_url(&line) {
-                        self.set("on", Some(url), None, changed);
-                    } else if line.contains("ERR") {
-                        last_error = line.chars().take(200).collect();
+                    match read_line(spec, &line) {
+                        Seen::Url(url) => {
+                            let info = self.info();
+                            if info.state != "on" || info.url.as_deref() != Some(url.as_str()) {
+                                self.set("on", Some(url), None, changed);
+                            }
+                        }
+                        Seen::Problem { text, known } => {
+                            if known || !last_known {
+                                last_error = text;
+                                last_known = known;
+                            }
+                        }
+                        Seen::Nothing => {}
                     }
                 }
             }
@@ -177,7 +268,7 @@ impl Tunnel {
                 break;
             }
             let ran = began.elapsed();
-            let msg = if last_error.is_empty() { "The tunnel stopped.".to_string() } else { format!("The tunnel stopped: {last_error}") };
+            let msg = if last_error.is_empty() { "The tunnel stopped.".to_string() } else if last_known { last_error } else { format!("The tunnel stopped: {last_error}") };
             self.set("error", None, Some(msg), changed);
             if ran > Duration::from_secs(60) {
                 wait = Duration::from_secs(2);
@@ -200,7 +291,9 @@ impl Tunnel {
 
 /// PATH, then ~/.local/bin, then the data folder; else download.
 pub fn find_binary(dir: &Path) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).map(|d| d.join("cloudflared")).collect()).unwrap_or_default();
+    // For tests: a stand-in for cloudflared.
+    let mut candidates: Vec<PathBuf> = std::env::var_os("ZAZABOR_CLOUDFLARED").map(PathBuf::from).into_iter().collect();
+    candidates.extend(std::env::var_os("PATH").map(|p| std::env::split_paths(&p).map(|d| d.join("cloudflared")).collect::<Vec<_>>()).unwrap_or_default());
     if let Some(home) = std::env::var_os("HOME") {
         candidates.push(PathBuf::from(home).join(".local/bin/cloudflared"));
     }
@@ -322,5 +415,68 @@ mod tests {
         assert_eq!(checksum_for(&by_notes, ASSET), Some([0xab; 32]));
         assert_eq!(checksum_for(&serde_json::json!({"assets": []}), ASSET), None);
         assert_eq!(checksum_for(&serde_json::json!({"body": format!("{ASSET}: 1234")}), ASSET), None);
+    }
+
+    const TOKEN: &str = "eyJhIjoiZmFrZSIsInQiOiJ0ZXN0IiwicyI6Im5vdC1hLXJlYWwtc2VjcmV0In0=";
+
+    #[test]
+    fn a_named_tunnel_is_up_when_a_connection_registers() {
+        let up = "2026-11-21T10:00:03Z INF Registered tunnel connection connIndex=0 connection=5f0c2c0e-1a2b-4c3d-8e9f-001122334455 event=0 ip=198.41.192.7 location=sin01 protocol=quic";
+        assert_eq!(read_domain_line("meet.example.com", up), Seen::Url("https://meet.example.com".into()));
+        assert_eq!(read_domain_line("meet.example.com", "2026-11-21T10:00:01Z INF Starting tunnel tunnelID=5f0c2c0e-1a2b-4c3d-8e9f-001122334455"), Seen::Nothing);
+        assert_eq!(read_domain_line("meet.example.com", "2026-11-21T10:00:01Z INF Initial protocol quic"), Seen::Nothing);
+    }
+
+    #[test]
+    fn common_named_tunnel_failures_get_plain_messages() {
+        let known = |line: &str| match read_domain_line("meet.example.com", line) {
+            Seen::Problem { text, known: true } => text,
+            other => panic!("{line:?} gave {other:?}"),
+        };
+        assert!(known("2026-11-21T10:00:00Z ERR Provided Tunnel token is not valid (Error parsing tunnel ID). Please make sure you provide the proper token").contains("doesn't accept this token"));
+        assert!(known("2026-11-21T10:00:00Z ERR Register tunnel error from server side error=\"Unauthorized: Invalid tunnel secret\" connIndex=0").contains("doesn't accept this token"));
+        assert!(known("2026-11-21T10:00:00Z ERR Register tunnel error from server side error=\"Unauthorized: Tunnel not found\" connIndex=0").contains("no longer exists"));
+        assert!(known("2026-11-21T10:00:00Z ERR Unable to establish connection with Cloudflare edge error=\"dial tcp: lookup region1.v2.argotunnel.com: no such host\" connIndex=1").contains("Can't reach Cloudflare"));
+        assert!(known("2026-11-21T10:00:00Z ERR error=\"Unable to reach the origin service. The service may be down or it may not be responding to traffic from cloudflared: dial tcp 127.0.0.1:47230: connect: connection refused\"").contains("localhost:47230"));
+        // Any other error is kept, but not claimed as ours.
+        assert!(matches!(read_domain_line("meet.example.com", "2026-11-21T10:00:00Z ERR something odd"), Seen::Problem { known: false, .. }));
+        // The quick tunnel's own lines read as before.
+        let spec = Spec::Quick { port: 47230 };
+        assert_eq!(read_line(&spec, "INF |  https://quiet-river-shaped-lamp.trycloudflare.com  |"), Seen::Url("https://quiet-river-shaped-lamp.trycloudflare.com".into()));
+    }
+
+    #[test]
+    fn the_token_goes_in_the_environment_never_the_arguments() {
+        let cmd = command(Path::new("cloudflared"), &Spec::Domain { hostname: "meet.example.com".into(), token: TOKEN.into() });
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["tunnel", "--no-autoupdate", "run"]);
+        assert!(!args.iter().any(|a| a.contains(TOKEN)));
+        assert!(cmd.get_envs().any(|(k, v)| k == "TUNNEL_TOKEN" && v.is_some_and(|v| v == TOKEN)));
+        assert!(!format!("{:?}", Spec::Domain { hostname: "h.example.com".into(), token: TOKEN.into() }).contains(TOKEN));
+        let quick = command(Path::new("cloudflared"), &Spec::Quick { port: 47231 });
+        assert!(quick.get_args().any(|a| a == "http://127.0.0.1:47231"));
+        assert!(quick.get_envs().any(|(k, v)| k == "TUNNEL_TOKEN" && v.is_none()));
+    }
+
+    /// A stand-in `cloudflared` that checks it got the token from the environment and prints what the real one does.
+    #[test]
+    fn a_fake_cloudflared_brings_the_domain_up_and_down() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("zazabor-tunnel-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen = dir.join("seen");
+        let script = dir.join("cloudflared");
+        std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" > {seen}\nif [ \"$TUNNEL_TOKEN\" = \"{TOKEN}\" ]; then echo env-ok >> {seen}; fi\necho '2026-11-21T10:00:01Z INF Starting tunnel tunnelID=5f0c2c0e' >&2\nsleep 0.3\necho '2026-11-21T10:00:03Z INF Registered tunnel connection connIndex=0 ip=198.41.192.7 location=sin01 protocol=quic' >&2\necho '2026-11-21T10:00:04Z INF Registered tunnel connection connIndex=1 ip=198.41.192.8 location=sin02 protocol=quic' >&2\nsleep 30\n", seen = seen.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("ZAZABOR_CLOUDFLARED", &script);
+        let tunnel = Tunnel::new();
+        tunnel.start(Spec::Domain { hostname: "meet.example.com".into(), token: TOKEN.into() }, dir.clone(), Arc::new(|| {}));
+        assert_eq!(tunnel.wait_on(Duration::from_secs(10)).unwrap(), "https://meet.example.com");
+        let log = std::fs::read_to_string(&seen).unwrap();
+        assert!(log.contains("tunnel --no-autoupdate run") && !log.contains(TOKEN) && log.contains("env-ok"), "{log}");
+        tunnel.stop();
+        assert_eq!(tunnel.info().state, "off");
+        std::env::remove_var("ZAZABOR_CLOUDFLARED");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

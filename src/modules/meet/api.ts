@@ -71,6 +71,17 @@ export interface MeetState {
   recordingsDir: string;
   stun: string[];
   turn: Turn | null;
+  /** "quick": a random trycloudflare.com address; "domain": the user's own, through a named Cloudflare tunnel. */
+  mode: "quick" | "domain";
+  hostname: string;
+  /** Whether a tunnel token is saved. The token itself is never sent to the page. */
+  tokenSet: boolean;
+}
+
+/** What Settings' "Test" found at `https://<hostname>/api/health`. */
+export interface DomainCheck {
+  result: "this-pc" | "other" | "unreachable";
+  message: string;
 }
 
 /** What the sheets send to `meet_create` and `meet_update` (the latter with the `id`). */
@@ -142,6 +153,10 @@ export const meetApi = {
   recordingDelete: (id: string) => call<void>("meet_recording_delete", { id }),
   tunnel: (on: boolean) => call<MeetState>("meet_tunnel", { on }),
   settings: (stun: string[], turn: Turn | null) => call<MeetState>("meet_settings", { stun, turn }),
+  /** Quick link or own domain. Omit `hostname`/`token` to keep what's saved; `clearToken` forgets the token. */
+  domain: (input: { mode: "quick" | "domain"; hostname?: string; token?: string; clearToken?: boolean }) => call<MeetState>("meet_domain", { ...input }),
+  /** Fetches the domain's /api/health from this PC (starts the tunnel first when it's off; up to 30 s). */
+  domainTest: () => call<DomainCheck>("meet_domain_test"),
   // Mail's accounts and contacts, through the mock in a dev build.
   mailAccounts: () => call<Overview>("mail_overview").then((o): Account[] => o.accounts),
   mailContacts: (prefix: string) => call<Address[]>("mail_contacts", { prefix }),

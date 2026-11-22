@@ -39,6 +39,16 @@ pub fn start(hub: &Arc<Hub>, preferred: u16) -> Result<u16, String> {
         .find_map(|p| TcpListener::bind((Ipv4Addr::LOCALHOST, p)).ok())
         .or_else(|| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok())
         .ok_or("Meet couldn't open a local port.")?;
+    listen(hub, listener)
+}
+
+/// Starts listening on exactly `port` (the domain's Cloudflare hostname points at it), or says why not.
+pub fn start_exact(hub: &Arc<Hub>, port: u16) -> Result<u16, String> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(|e| format!("Port {port} is in use by another program ({e}). Your own domain needs exactly this port: close that program, then try again."))?;
+    listen(hub, listener)
+}
+
+fn listen(hub: &Arc<Hub>, listener: TcpListener) -> Result<u16, String> {
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let hub = hub.clone();
     std::thread::spawn(move || {
@@ -179,6 +189,8 @@ fn serve(hub: &Arc<Hub>, mut stream: TcpStream) -> Result<(), String> {
         ("GET", ["assets", "room.css"]) => respond(&mut stream, "200 OK", "text/css; charset=utf-8", ROOM_CSS.as_bytes(), false),
         ("GET", ["assets", "tick.js"]) => respond(&mut stream, "200 OK", "text/javascript; charset=utf-8", TICK_JS.as_bytes(), false),
         ("GET", ["assets", "room.js"]) => respond(&mut stream, "200 OK", "text/javascript; charset=utf-8", ROOM_JS.as_bytes(), false),
+        // Tells the Settings "Test" that a hostname leads to this very Zazabor (no secrets).
+        ("GET", ["api", "health"]) => json_reply(&mut stream, "200 OK", json!({"app": "zazabor-meet", "nonce": hub.nonce()})),
         ("GET", ["api", "info", code]) => match store::valid_code(code).then(|| hub.meeting_by_code(code)).flatten() {
             Some(m) => {
                 let host = req.q("host").is_some_and(|t| hub.is_host_token(t)) && !req.via_tunnel();

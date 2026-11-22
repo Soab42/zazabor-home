@@ -164,6 +164,18 @@
 
 .mtg-settings-address { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mtg-settings-input { margin-top: 6px; }
+.mtg-radio { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.mtg-radio input { margin: 0; }
+.mtg-gap { margin-top: 12px; }
+.mtg-token-line { align-items: center; margin-top: 6px; }
+.mtg-token-saved { color: var(--text-2); font-size: var(--text-sm); }
+.mtg-test { margin: 8px 0 0; }
+.mtg-test[data-result="this-pc"] { color: var(--success, #30d158); }
+.mtg-test[data-result="other"], .mtg-test[data-result="unreachable"] { color: var(--danger, #ff453a); }
+.mtg-guide { margin-top: 12px; font-size: var(--text-sm); color: var(--text-2); }
+.mtg-guide summary { cursor: pointer; color: var(--text); }
+.mtg-guide ol { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.mtg-guide code { font-family: var(--mono, monospace); background: var(--control); padding: 1px 5px; border-radius: 4px; }
 .mtg-settings-stun { height: auto; padding: 8px 10px; resize: vertical; }
 
 @keyframes mtg-pulse { 50% { opacity: 0.35; } }
