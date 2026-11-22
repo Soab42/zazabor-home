@@ -7868,7 +7868,7 @@ dependencies = [
 
 [[package]]
 name = "zazabor"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "ammonia",
  "argon2",
