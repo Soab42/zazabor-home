@@ -12,7 +12,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub const PREFIX: &str = "remote-ui-";
 const ASK_WINDOW: (f64, f64) = (460.0, 152.0);
-const LIVE_WINDOW: (f64, f64) = (470.0, 58.0);
+/// The running session's sign: a small badge with Stop in each monitor's top-right corner.
+const LIVE_WINDOW: (f64, f64) = (108.0, 56.0);
 /// How long the question waits before it counts as "no".
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -151,8 +152,14 @@ fn show() {
         let _ = window.set_size(tauri::LogicalSize::new(w, h));
         if let Some(m) = monitors.get(i) {
             let scale = m.scale_factor();
-            let x = m.position().x + ((m.size().width as f64 - w * scale) / 2.0).round() as i32;
-            let y = m.position().y + (28.0 * scale).round() as i32;
+            // The question sits at the top centre; the running session's badge in the top-right
+            // corner, below the desktop's top bar, out of the way.
+            let x = if state.mode == "ask" {
+                m.position().x + ((m.size().width as f64 - w * scale) / 2.0).round() as i32
+            } else {
+                m.position().x + (m.size().width as f64 - (w + 12.0) * scale).round() as i32
+            };
+            let y = m.position().y + (if state.mode == "ask" { 28.0 } else { 40.0 } * scale).round() as i32;
             let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
         }
         let _ = window.set_always_on_top(true);

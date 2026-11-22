@@ -172,6 +172,29 @@ class RemoteGesturesTest {
     }
 
     @Test
+    fun aZoomedLetterboxedPictureScrollsUpAndDownToTheViewsEdges() {
+        // Two monitors side by side (3840x1080) on a landscape phone (2400x1080): 2400x675, 202.5 px
+        // bars above and below. At 2x it is 1350 tall, so it must reach both the top and the bottom.
+        val v = Viewport(2400f, 1080f, 3840f, 1080f)
+        v.zoomAt(2f, 1200f, 540f)
+        v.pan(0f, 9000f)
+        assertEquals(0f, v.fit()[1] + v.ty, 0.5f) // its top at the view's top
+        v.pan(0f, -9000f)
+        assertEquals(1080f, v.fit()[1] + v.ty + v.fit()[3] * v.zoom, 0.5f) // its bottom at the view's bottom
+    }
+
+    @Test
+    fun aFingerNearAnEdgeSlidesTheZoomedPicture() {
+        val v = Viewport(1600f, 900f, 1600f, 900f)
+        assertTrue(!v.edgePan(1590f, 450f, 20f)) // not zoomed: nothing to slide
+        v.zoomAt(2f, 800f, 450f)
+        val before = v.ty
+        assertTrue(v.edgePan(800f, 895f, 20f)) // at the bottom edge: the picture moves up
+        assertTrue(v.ty < before)
+        assertTrue(!v.edgePan(800f, 450f, 20f)) // the middle: still
+    }
+
+    @Test
     fun speedSliderRange() {
         assertEquals(0.5f, speedOf(0), 0.001f)
         assertEquals(3f, speedOf(100), 0.001f)

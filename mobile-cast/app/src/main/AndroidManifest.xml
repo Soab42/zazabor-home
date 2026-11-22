@@ -69,6 +69,15 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- The PC asks to control this phone: a prompt on the screen as well as the notification. -->
+        <activity
+            android:name=".ControlAskActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- "Send to PC" in the share sheet. -->
         <activity
             android:name=".ShareActivity"

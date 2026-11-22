@@ -60,15 +60,47 @@ class Viewport(var viewW: Float, var viewH: Float, var picW: Float, var picH: Fl
         ty = 0f
     }
 
-    /** Keeps the zoomed picture covering the fitted rectangle. */
+    /**
+     * While zoomed, a finger near an edge of the view slides the picture that way, so what's off
+     * screen can be reached with the finger that also moves the pointer. Deeper into the edge band
+     * means faster. True if the picture moved.
+     */
+    fun edgePan(x: Float, y: Float, step: Float): Boolean {
+        if (zoom <= 1.01f || viewW <= 0f || viewH <= 0f) return false
+        fun push(p: Float, size: Float): Float {
+            val band = size * EDGE
+            return when {
+                p < band -> step * (1f - p / band)
+                p > size - band -> -step * (1f - (size - p) / band)
+                else -> 0f
+            }
+        }
+        val dx = push(x, viewW)
+        val dy = push(y, viewH)
+        if (dx == 0f && dy == 0f) return false
+        val (ox, oy) = tx to ty
+        pan(dx, dy)
+        return tx != ox || ty != oy
+    }
+
+    /**
+     * Keeps the zoomed picture in view: larger than the view on an axis, it moves until its edges
+     * meet the view's edges (not just the fitted rectangle's, which left a letterboxed picture
+     * unable to scroll up or down); smaller, it stays centred.
+     */
     private fun clamp() {
         val f = fit()
-        tx = tx.coerceIn(min(0f, f[2] * (1 - zoom)), 0f)
-        ty = ty.coerceIn(min(0f, f[3] * (1 - zoom)), 0f)
+        tx = clampAxis(tx, f[0], f[2] * zoom, viewW)
+        ty = clampAxis(ty, f[1], f[3] * zoom, viewH)
     }
+
+    private fun clampAxis(t: Float, start: Float, size: Float, view: Float): Float =
+        if (size <= view) (view - size) / 2f - start else t.coerceIn(view - size - start, -start)
 
     companion object {
         const val MAX_ZOOM = 5f
+        /** The share of the view at each edge where a finger slides a zoomed picture. */
+        const val EDGE = 0.12f
     }
 }
 
@@ -208,6 +240,7 @@ class GestureEngine(
                     val ry = accelerate(dy, speed).toInt()
                     if (rx != 0 || ry != 0) send(Input.MoveRel(rx, ry))
                 } else {
+                    if (viewport.edgePan(pts[0].x, pts[0].y, 22f * density)) onViewport()
                     val w = viewport.toWire(pts[0].x, pts[0].y)
                     send(Input.MoveAbs(w[0], w[1]))
                 }

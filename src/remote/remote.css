@@ -33,4 +33,13 @@ body.remote-window, body.remote-window #app { height: 100vh; min-height: 0; disp
 .rc-keys { font-size: 10px; font-weight: 500; opacity: 0.8; white-space: nowrap; }
 .rc-stop { all: unset; display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: var(--text-sm); font-weight: 700; background: #fff; color: #b3202a; }
 .rc-stop:hover { background: #ffe3e4; }
+/* The running session: a badge and a Stop button in the top-right corner. */
+.rc-root[data-mode="live"] { justify-content: flex-end; padding: 6px; }
+.rc-mini {
+  display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 999px;
+  background: #d92d33; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.55), 0 6px 18px rgba(217, 45, 51, 0.5);
+}
+.rc-badge { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; color: #fff; }
+.rc-badge .rc-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; }
+.rc-mini .rc-stop { width: 34px; height: 34px; padding: 0; justify-content: center; border-radius: 50%; }
 @media (prefers-reduced-motion: reduce) { .rc-card, .rc-dot { animation: none; } }

@@ -42,7 +42,36 @@ const FRESH_KEY_WAIT: Duration = Duration::from_millis(500);
 /// `network-caching` both set the input's buffer (the stream is a live http one); `clock-synchro=0`
 /// stops libVLC from re-deriving the clock from the first packets, which is where a late start's
 /// delay would otherwise be kept.
-const PLAYER_OPTIONS: [&str; 5] = [":network-caching=100", ":live-caching=100", ":demux=ts", ":clock-jitter=0", ":clock-synchro=0"];
+/// libVLC's options for the phone's stream. Decoded on the CPU and never hurried: a frame the
+/// decoder skipped (or the graphics decoder dropped) is one the next frames are drawn from, and the
+/// picture smeared into blocks while the phone animated (seen on a real phone, 2026-11-22).
+const PLAYER_OPTIONS: [&str; 9] = [
+    ":network-caching=100",
+    ":live-caching=100",
+    ":demux=ts",
+    ":clock-jitter=0",
+    ":clock-synchro=0",
+    ":avcodec-hw=none",
+    ":no-avcodec-hurry-up",
+    ":avcodec-skip-frame=0",
+    ":avcodec-skiploopfilter=0",
+];
+
+/// When this PC last asked a phone to mirror (Phone Link's Mirror button). That phone's hello is
+/// answered at once: the user is waiting for the picture, and waiting for the player first could
+/// stall both sides (the player had nothing to play until the phone streamed, and the phone
+/// streamed only once answered; a quick restart hung on the spinner).
+static PC_ASKED: Mutex<Option<Instant>> = Mutex::new(None);
+const PC_ASKED_FOR: Duration = Duration::from_secs(90);
+
+/// Phone Link asked a phone to mirror here: its connection needs no wait for the player.
+pub fn expect_phone() {
+    *lock(&PC_ASKED) = Some(Instant::now());
+}
+
+fn pc_asked() -> bool {
+    lock(&PC_ASKED).take().is_some_and(|at| at.elapsed() < PC_ASKED_FOR)
+}
 
 /// Listens for phones; returns the TCP port.
 pub fn start(generation: u64) -> Result<u16, String> {
@@ -146,10 +175,14 @@ fn serve_phone(stream: TcpStream, generation: u64, player_port: u16) {
             ..Default::default()
         },
     );
-    if let Err(reason) = wait_for_answer(session, generation, &phone) {
-        answer(&mut phone, Err(&reason));
-        super::stop(session);
-        return;
+    // A mirror this PC asked for streams straight away (the player joins at the next key frame);
+    // one the phone started waits for the page's yes.
+    if !pc_asked() {
+        if let Err(reason) = wait_for_answer(session, generation, &phone) {
+            answer(&mut phone, Err(&reason));
+            super::stop(session);
+            return;
+        }
     }
     if !answer(&mut phone, Ok(())) {
         super::stop(session);
@@ -523,20 +556,36 @@ fn serve_player(mut stream: TcpStream, generation: u64) {
         return;
     }
     let _ = stream.set_nodelay(true);
+    let debug = std::env::var_os("ZAZABOR_MIRROR_DEBUG").is_some();
+    if debug {
+        eprintln!("[mirror] player joined {path}");
+    }
     let since = feed.next_seq();
     let reader = feed.join();
     feed.want_key.store(true, Ordering::SeqCst);
     // The picture should be what the phone shows now, not up to a key frame interval ago.
-    feed.restart_at_fresh_key(reader, since, FRESH_KEY_WAIT);
+    let fresh = feed.restart_at_fresh_key(reader, since, FRESH_KEY_WAIT);
+    if debug {
+        eprintln!("[mirror] fresh key: {fresh}");
+    }
+    let (mut sent, mut told) = (0usize, Instant::now());
     while super::alive(generation) {
         match feed.next(reader, Duration::from_secs(1)) {
             Ok(chunks) => {
                 if chunks.iter().any(|c| stream.write_all(c).is_err()) {
                     break;
                 }
+                sent += chunks.iter().map(|c| c.len()).sum::<usize>();
+                if debug && told.elapsed() >= Duration::from_secs(2) {
+                    eprintln!("[mirror] {sent} bytes to the player");
+                    told = Instant::now();
+                }
             }
             Err(()) => break,
         }
+    }
+    if debug {
+        eprintln!("[mirror] player left after {sent} bytes");
     }
     feed.leave(reader);
     let _ = stream.shutdown(Shutdown::Both);

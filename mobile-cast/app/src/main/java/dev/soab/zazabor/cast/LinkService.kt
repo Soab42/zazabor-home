@@ -731,9 +731,16 @@ class LinkService : Service() {
             this, request, Intent(this, LinkService::class.java).setAction(ACTION_CONTROL_ANSWER).putExtra(EXTRA_TEXT, choice),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // Tapping the notification opens the prompt (not the app), and the prompt opens by itself:
+        // the accessibility service this needs lets the app start it from the background.
+        val prompt = PendingIntent.getActivity(
+            this, 24, Intent(this, ControlAskActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(ControlAskActivity.EXTRA_NAME, name),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         notify(
             NOTIFY_CONTROL_ASK,
             alert("$name wants to control this phone", "It can tap, swipe and type for you. A red border shows while it does.")
+                .setContentIntent(prompt)
                 .setAutoCancel(true)
                 .setTimeoutAfter(60_000)
                 .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_link), "Allow once", action("once", 20)).build())
@@ -741,6 +748,7 @@ class LinkService : Service() {
                 .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stop), "Deny", action("deny", 22)).build())
                 .build(),
         )
+        main.post { runCatching { ControlAskActivity.show(this, name) }.onFailure { Log.w(TAG, "couldn't show the control prompt", it) } }
         return try {
             answer.get(60, TimeUnit.SECONDS)
         } catch (_: Exception) {
@@ -748,6 +756,7 @@ class LinkService : Service() {
         } finally {
             controlChoice = null
             cancelNotification(NOTIFY_CONTROL_ASK)
+            ControlAskActivity.close()
         }
     }
 

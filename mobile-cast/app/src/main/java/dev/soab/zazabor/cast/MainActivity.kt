@@ -163,9 +163,15 @@ class MainActivity : Activity() {
 
     // ---- mirroring ----
 
-    private fun mirrorTo(pc: Pc) {
+    private fun mirrorTo(pc: Pc, retry: Boolean = true) {
         if (MirrorState.status.active) {
-            Toast.makeText(this, "Already mirroring. Stop it first.", Toast.LENGTH_SHORT).show()
+            if (!retry) {
+                Toast.makeText(this, "Already mirroring. Stop it first.", Toast.LENGTH_SHORT).show()
+                return
+            }
+            // Asked again (the PC's window was closed, or it got stuck): start over instead of refusing.
+            MirrorService.stop(this)
+            window.decorView.postDelayed({ if (!isFinishing && !isDestroyed) mirrorTo(pc, retry = false) }, 1200)
             return
         }
         pending = pc

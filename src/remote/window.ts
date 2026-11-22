@@ -52,12 +52,12 @@ export async function startRemoteWindow(config: Config) {
       );
       once.focus();
     } else if (state.mode === "live") {
+      // A small badge in the corner (the user asked for it out of the way), still on every monitor.
+      const who = `${state.viewOnly ? "Watched" : "Controlled"} from ${state.phone}. Ctrl+Alt+Esc or Stop ends it.`;
       root.append(
-        h("div", { class: "rc-pill", role: "status" },
-          h("span", { class: "rc-dot", "aria-hidden": "true" }),
-          h("span", { class: "rc-label" }, `Controlled from ${state.phone}`, state.viewOnly ? h("em", null, " (view only)") : null),
-          h("span", { class: "rc-keys" }, "Ctrl+Alt+Esc"),
-          h("button", { class: "rc-stop", type: "button", onclick: () => void invoke("remote_stop").catch(() => undefined) }, icon("stop", 13), "Stop")),
+        h("div", { class: "rc-mini", role: "status", title: who, "aria-label": who },
+          h("span", { class: "rc-badge" }, icon("phone", 16), h("span", { class: "rc-dot", "aria-hidden": "true" })),
+          h("button", { class: "rc-stop", type: "button", title: "Stop remote control", "aria-label": "Stop remote control", onclick: () => void invoke("remote_stop").catch(() => undefined) }, icon("stop", 13))),
       );
     }
   };

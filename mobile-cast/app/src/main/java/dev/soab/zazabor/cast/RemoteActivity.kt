@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,6 +20,8 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
@@ -46,6 +49,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         private const val KEYBOARD = 2
         private const val MEDIA = 3
         private val TABS = listOf("Screen", "Touchpad", "Keyboard", "Media")
+        private const val CHROME_MS = 3000L
 
         /** The picture size the phone asks the PC for (the PC never sends more than its monitor has). */
         private const val MAX_W = 1600
@@ -77,6 +81,12 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
     private var ended = false
 
     private lateinit var tabs: List<TextView>
+    /** The top bar and the screen's tools: hidden while the PC's screen fills the phone. */
+    private lateinit var bar: View
+    private lateinit var tools: View
+    private lateinit var reveal: TextView
+    private var chromeShown = true
+    private val hideChrome = Runnable { if (mode == SCREEN) setChrome(false) }
     private lateinit var status: TextView
     private lateinit var statsLabel: TextView
     private lateinit var content: FrameLayout
@@ -153,6 +163,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         statsLabel.setOnClickListener { toggleClock() }
         bar.addView(statsLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        this.bar = bar
 
         content = FrameLayout(this)
         buildScreen()
@@ -249,6 +260,24 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
             applyViewport()
         })
         screenView.addView(tools, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END))
+        this.tools = tools
+        // While the controls are hidden, this small button brings them back (touches on the
+        // picture belong to the PC, so it can't be a tap anywhere).
+        reveal = TextView(this).apply {
+            text = "⋯"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            gravity = Gravity.CENTER
+            alpha = 0.55f
+            background = GradientDrawable().apply {
+                setColor(0x99000000.toInt())
+                cornerRadius = dp(18).toFloat()
+            }
+            contentDescription = "Show the controls"
+            visibility = View.GONE
+            setOnClickListener { setChrome(true) }
+        }
+        screenView.addView(reveal, FrameLayout.LayoutParams(dp(40), dp(36), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(8), dp(8), 0) })
     }
 
     /** Lays the picture out (fitted) and zoomed. */
@@ -495,6 +524,48 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         line("Volume −" to RemoteProto.Media.VOL_DOWN, "Mute" to RemoteProto.Media.MUTE, "Volume +" to RemoteProto.Media.VOL_UP)
     }
 
+    // ---- the controls around the picture ----
+
+    /**
+     * Shows or hides the top bar, the screen's tools and the phone's own status and navigation bars.
+     * On the Screen tab they hide 3 s after the last touch, so the PC's screen fills the phone.
+     */
+    private fun setChrome(shown: Boolean) {
+        main.removeCallbacks(hideChrome)
+        chromeShown = shown
+        bar.visibility = if (shown) View.VISIBLE else View.GONE
+        tools.visibility = if (shown) View.VISIBLE else View.GONE
+        reveal.visibility = if (shown || mode != SCREEN) View.GONE else View.VISIBLE
+        val full = !shown && mode == SCREEN
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let { c ->
+                if (full) {
+                    c.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    c.hide(WindowInsets.Type.systemBars())
+                } else {
+                    c.show(WindowInsets.Type.systemBars())
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (full) {
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            } else {
+                View.SYSTEM_UI_FLAG_VISIBLE
+            }
+        }
+        if (shown && mode == SCREEN) main.postDelayed(hideChrome, CHROME_MS)
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Using the controls keeps them up a little longer.
+        if (chromeShown && mode == SCREEN && ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            main.removeCallbacks(hideChrome)
+            main.postDelayed(hideChrome, CHROME_MS)
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     // ---- modes ----
 
     private fun select(next: Int) {
@@ -510,6 +581,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         padView.visibility = if (next == TOUCHPAD) View.VISIBLE else View.GONE
         keyboardView.visibility = if (next == KEYBOARD) View.VISIBLE else View.GONE
         mediaView.visibility = if (next == MEDIA) View.VISIBLE else View.GONE
+        setChrome(true)
         requestedOrientation = if (next == SCREEN) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         val imm = getSystemService(InputMethodManager::class.java)
         if (next == KEYBOARD) {
@@ -691,6 +763,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
 
     override fun onDestroy() {
         ended = true
+        main.removeCallbacks(hideChrome)
         ticker.stop()
         client?.send(JSONObject().put("t", "stop"))
         decoder?.release()
