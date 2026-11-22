@@ -1,6 +1,7 @@
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import { picUrl, type CatRow, type Home, type Item } from "./api";
+import type { ContinueEntry } from "./library";
 import { badges, hued, meta, shelf, skeletonShelf, type TvCtx } from "./parts";
 
 /** Seconds each title stays: the progress bars and the Ken Burns move share it. */
@@ -80,12 +81,21 @@ export class Hero {
     play.addEventListener("click", () => this.ctx.play(item));
     const more = h("button", { class: "tv-pill glass", type: "button", "data-tv-focus": "" }, icon("info", 17), "Details");
     more.addEventListener("click", () => this.ctx.openDetail(item, this.el));
+    const listed = h("button", { class: "tv-pill glass icon-only tv-hero-fav", type: "button", title: "My List", "aria-label": "My List", "data-tv-focus": "" }, icon("heart", 17));
+    listed.addEventListener("click", () => this.ctx.toggle(item, "fav"));
+    const paintListed = () => {
+      const on = this.ctx.marks.has(item, "fav");
+      listed.classList.toggle("on", on);
+      listed.setAttribute("aria-pressed", String(on));
+    };
+    paintListed();
+    this.ctx.marks.subscribe(() => slide.isConnected && paintListed());
     const copy = h("div", { class: "tv-slide-copy" },
       h("span", { class: "tv-kicker" }, i === 0 ? "New on DhakaFlix" : item.category),
       h("h1", { class: "tv-slide-title" }, item.title),
       h("p", { class: "tv-slide-meta" }, meta(item)),
       badges(item, 5),
-      h("div", { class: "tv-slide-actions" }, play, more));
+      h("div", { class: "tv-slide-actions" }, play, more, listed));
     const slide = h("div", { class: `tv-slide${i % 2 ? " alt" : ""}`, role: "group", "aria-roledescription": "slide", "aria-label": `${i + 1} of ${this.items.length}` }, art, copy);
     if (item.poster) apply(item);
     this.ctx.loader.watch(slide, item, apply);
@@ -160,10 +170,16 @@ export class Hero {
 const SECTION_ORDER: Record<string, number> = { movies: 0, indian: 1, animation: 2, tv: 3 };
 
 /** Rows of the Home page, built from what the backend sent. */
-export function homeRows(home: Home, ctx: TvCtx): { hero: Hero | null; rows: HTMLElement[] } {
+export function homeRows(home: Home, ctx: TvCtx, resume: ContinueEntry[] = []): { hero: Hero | null; rows: HTMLElement[] } {
   const rows: HTMLElement[] = [];
   const hero = home.hero.length ? new Hero(home.hero, ctx) : null;
-  if (home.recent.length) rows.push(shelf("Recently Played", home.recent, ctx, { subtitle: "Pick up where you left off" }));
+  if (resume.length) {
+    const bars = new Map(resume.map((e) => [e.item.id, e.fraction]));
+    rows.push(shelf("Continue Watching", resume.map((e) => e.item), ctx, { subtitle: "Pick up where you left off", progressOf: (i) => bars.get(i.id), onMore: () => ctx.openLibrary("continue"), moreLabel: "Library" }));
+  }
+  if (home.recent.length) rows.push(shelf("Recently Played", home.recent, ctx, { subtitle: resume.length ? undefined : "Pick up where you left off" }));
+  if (home.fav.length) rows.push(shelf("My List", home.fav, ctx, { onMore: () => ctx.openLibrary("fav") }));
+  if (home.later.length) rows.push(shelf("Watch Later", home.later, ctx, { onMore: () => ctx.openLibrary("later") }));
   if (home.new.length) rows.push(shelf("New on DhakaFlix", home.new, ctx));
   if (home.top.length >= 3) rows.push(shelf(`Top 10 in ${home.topYear ?? "this year"}`, home.top, ctx, { numbered: true, subtitle: "Newest first" }));
   const cats = [...home.categories].filter((c) => c.items.length).sort((a, b) => (SECTION_ORDER[a.section] ?? 9) - (SECTION_ORDER[b.section] ?? 9));

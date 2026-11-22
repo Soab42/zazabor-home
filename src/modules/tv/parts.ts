@@ -1,7 +1,10 @@
 import type { ShellContext } from "../../shell/module";
 import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
-import { picUrl, sizeText, tvApi, type Item } from "./api";
+import { isPhone } from "./phone";
+import { picUrl, sizeText, tvApi, type Item, type List } from "./api";
+import type { DownloadsStore } from "./downloads";
+import type { Marks } from "./marks";
 
 /** What every page of the section can ask for. */
 export interface TvCtx {
@@ -14,7 +17,42 @@ export interface TvCtx {
   openDetail(item: Item, from?: HTMLElement): void;
   openCategory(url: string, label: string): void;
   readonly loader: PosterLoader;
+  /** My List, Watch Later and Watched, as the page knows them. */
+  readonly marks: Marks;
+  readonly downloads: DownloadsStore;
+  /** Puts a title on a list or takes it off (with a toast to undo it). */
+  toggle(item: Item, list: List): void;
+  /** Downloads a film; for a series opens its page (to pick an episode, a season or all). */
+  download(item: Item): void;
+  /** The actions menu of a title: right-click on the PC, long-press on the phone. */
+  openMenu(item: Item, at: { x: number; y: number } | HTMLElement): void;
+  /** Downloads some files of a series (episodes) and says so. */
+  downloadFiles(item: Item, files: { url: string; name: string; size: number }[]): void;
+  /** How far the player got in a file (0 to 1), or 0. */
+  fractionOfUrl(url: string): number;
+  /** When the player last had that file (ms), or 0. */
+  resumeAt(url: string): number;
+  /** VLC is installed on this PC (the PC only). */
+  readonly canVlc: boolean;
+  openInVlc(item: Item, url: string): void;
+  /** The phone's share sheet (the PC copies the link). */
+  share(item: Item, url: string): void;
+  /** Shows an error as a toast. */
+  fail(err: unknown): void;
+  openLibrary(tab: "continue" | "fav" | "later" | "downloads" | "watched"): void;
 }
+
+const WEEK = 7 * 86400000;
+/** A title the servers got in the last week. */
+export const isNew = (item: Item) => item.added > 0 && Date.now() - item.added < WEEK;
+
+const items = new WeakMap<Element, Item>();
+/** The title a card (or something in it) stands for. */
+export const itemOf = (el: Element | null): Item | undefined => {
+  const card = el?.closest(".tv-item, .tv-card");
+  const found = card && (items.get(card) ?? items.get(card.querySelector(".tv-card") ?? card));
+  return found || undefined;
+};
 
 export const hueOf = (text: string) => {
   let n = 0;
@@ -101,6 +139,8 @@ export class PosterLoader {
 }
 
 export interface CardOptions {
+  /** A bar along the poster's foot: how far through it the viewer is (0 to 1). */
+  progress?: number;
   /** A number shown big behind the poster (the Top 10 row). */
   rank?: number;
   /** A wide (landscape) card, for the Recently Played row. */
@@ -128,6 +168,21 @@ export function card(item: Item, ctx: TvCtx, options: CardOptions = {}): HTMLEle
     e.stopPropagation();
     ctx.play(item);
   });
+  const quickButton = (glyph: Parameters<typeof icon>[0], label: string, run: () => void) => {
+    const b = h("button", { class: "tv-quick-btn", type: "button", tabindex: -1, title: label, "aria-label": label }, icon(glyph, 16));
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      run();
+    });
+    return b;
+  };
+  const favButton = quickButton("heart", "My List (F)", () => ctx.toggle(item, "fav"));
+  const laterButton = quickButton("clock", "Watch Later (L)", () => ctx.toggle(item, "later"));
+  const quick = h("span", { class: "tv-quick" }, favButton, laterButton);
+  if (ctx.downloads.canDownload) quick.append(quickButton("download", "Download (D)", () => ctx.download(item)));
+  const flags = h("span", { class: "tv-flags" });
+  poster.append(flags, quick);
+  if (options.progress !== undefined) poster.append(h("span", { class: "tv-progress", role: "progressbar", "aria-valuenow": String(Math.round(options.progress * 100)) }, h("span", { style: { width: `${Math.round(options.progress * 100)}%` } })));
   const info = h("span", { class: "tv-hover" }, h("span", { class: "tv-hover-title" }, item.title), h("span", { class: "tv-hover-row" }, playButton, badges(item, 3)));
   const sheen = h("span", { class: "tv-sheen" });
   const face = h("div", { class: `tv-card${options.wide ? " wide" : ""}`, tabindex: -1, role: "button", "data-tv-focus": "", "aria-label": `${item.title}${item.year ? `, ${item.year}` : ""}` }, poster, sheen, info);
@@ -139,9 +194,85 @@ export function card(item: Item, ctx: TvCtx, options: CardOptions = {}): HTMLEle
     face.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
   });
   const caption = h("span", { class: "tv-caption", title: item.title }, h("span", { class: "tv-caption-title" }, item.title), h("span", { class: "tv-caption-meta" }, meta(item)));
+  face.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (!suppressed) ctx.openMenu(item, { x: e.clientX, y: e.clientY });
+  });
+  // the phone: a long press opens the menu (and the tap that ends it must not open the page)
+  let pressTimer = 0;
+  let pressAt = { x: 0, y: 0 };
+  let suppressed = false;
+  if (isPhone) {
+    face.addEventListener("pointerdown", (e) => {
+      suppressed = false;
+      pressAt = { x: e.clientX, y: e.clientY };
+      clearTimeout(pressTimer);
+      pressTimer = window.setTimeout(() => {
+        suppressed = true;
+        navigator.vibrate?.(12);
+        ctx.openMenu(item, pressAt);
+      }, 450);
+    });
+    const cancel = () => clearTimeout(pressTimer);
+    face.addEventListener("pointermove", (e) => {
+      if (Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 10) cancel();
+    });
+    face.addEventListener("pointerup", cancel);
+    face.addEventListener("pointercancel", cancel);
+    face.addEventListener("click", (e) => {
+      if (suppressed) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        suppressed = false;
+      }
+    }, true);
+  }
   const root = h("div", { class: `tv-item${options.rank ? " ranked" : ""}`, role: "listitem" }, options.rank ? h("span", { class: "tv-rank", "aria-hidden": "true" }, String(options.rank)) : null, h("div", { class: "tv-stack" }, face, caption));
   if (item.poster) apply(item);
   ctx.loader.watch(root, item, apply);
+  items.set(root, item);
+  items.set(face, item);
+  // the badges and toggles follow the lists and downloads, wherever they change
+  let attached = false;
+  let drawn = "";
+  const paint = () => {
+    const fav = ctx.marks.has(item, "fav");
+    const later = ctx.marks.has(item, "later");
+    const watched = ctx.marks.has(item, "watched");
+    const saved = ctx.downloads.hasAny(item);
+    // downloads report every 400 ms: touch the page only when something on this card changed
+    const now = `${fav}${later}${watched}${saved}`;
+    if (now === drawn) return;
+    drawn = now;
+    root.classList.toggle("is-fav", fav);
+    root.classList.toggle("is-later", later);
+    root.classList.toggle("is-watched", watched);
+    favButton.classList.toggle("on", fav);
+    laterButton.classList.toggle("on", later);
+    favButton.setAttribute("aria-pressed", String(fav));
+    laterButton.setAttribute("aria-pressed", String(later));
+    const parts: HTMLElement[] = [];
+    if (isNew(item) && !watched) parts.push(h("span", { class: "tv-flag new" }, "NEW"));
+    if (watched) parts.push(h("span", { class: "tv-flag watched", title: "Watched" }, icon("check", 12)));
+    if (saved) parts.push(h("span", { class: "tv-flag saved", title: "Downloaded" }, icon("download", 12)));
+    flags.replaceChildren(...parts);
+  };
+  paint();
+  const stopMarks = ctx.marks.subscribe(() => {
+    if (!root.isConnected) {
+      if (attached) stopAll();
+      return;
+    }
+    attached = true;
+    paint();
+  });
+  const stopDownloads = ctx.downloads.subscribe(() => {
+    if (root.isConnected) paint();
+  });
+  function stopAll() {
+    stopMarks();
+    stopDownloads();
+  }
   return root;
 }
 
@@ -160,6 +291,8 @@ const reveal = new IntersectionObserver((entries) => {
 }, { rootMargin: "0px 0px 25% 0px", threshold: 0 });
 
 export interface ShelfOptions extends CardOptions {
+  /** Per card: how far through the title the viewer is. */
+  progressOf?: (item: Item) => number | undefined;
   numbered?: boolean;
   onMore?: () => void;
   moreLabel?: string;
@@ -170,7 +303,7 @@ export interface ShelfOptions extends CardOptions {
 export function shelf(title: string, items: Item[], ctx: TvCtx, options: ShelfOptions = {}): HTMLElement {
   const row = h("div", { class: "tv-row", role: "list" });
   items.forEach((item, i) => {
-    const c = card(item, ctx, { ...options, rank: options.numbered ? i + 1 : undefined });
+    const c = card(item, ctx, { ...options, rank: options.numbered ? i + 1 : undefined, progress: options.progressOf?.(item) ?? options.progress });
     c.style.setProperty("--i", String(Math.min(i, 9)));
     row.append(c);
   });

@@ -3,12 +3,17 @@ import { h } from "../../ui/dom";
 import { icon } from "../../ui/icons";
 import "../files/ops/ops.css";
 import { showToast } from "../files/ops/toast";
-import { errorText, isMock, onTv, tvApi, type CatRow, type Home, type Item, type Progress, type Section } from "./api";
+import { errorText, isMock, onTv, titleKey, tvApi, type CatRow, type Download, type DownloadRequest, type Home, type Item, type List, type Progress, type Section } from "./api";
 import { BrowsePage } from "./browse";
 import { Detail } from "./detail";
+import { desktopBackend, DownloadsStore, phoneBackend } from "./downloads";
 import { Hero, homeRows, homeSkeleton } from "./home";
+import { LibraryPage, type ContinueEntry, type LibraryTab } from "./library";
 import { LivePage } from "./live";
-import { notice, PosterLoader, type TvCtx } from "./parts";
+import { Marks } from "./marks";
+import { closeMenu, menuIsOpen, showMenu, type MenuEntry } from "./menu";
+import { itemOf, notice, PosterLoader, type TvCtx } from "./parts";
+import { fractionOf, finished, inProgress, pickEpisode, type Positions } from "./progress";
 import { isPhone, pullToRefresh } from "./phone";
 import "./tv.css";
 
@@ -17,6 +22,7 @@ type Route =
   | { id: "section"; section: "movies" | "tv" | "animation" | "indian" }
   | { id: "category"; url: string; label: string }
   | { id: "search" }
+  | { id: "library"; tab: LibraryTab }
   | { id: "live" };
 
 const NAV: { id: string; label: string; route: Route }[] = [
@@ -26,16 +32,17 @@ const NAV: { id: string; label: string; route: Route }[] = [
   { id: "animation", label: "Animation", route: { id: "section", section: "animation" } },
   { id: "indian", label: "Bangla & Indian", route: { id: "section", section: "indian" } },
   { id: "live", label: "Live TV", route: { id: "live" } },
+  { id: "library", label: "Library", route: { id: "library", tab: "continue" } },
   { id: "search", label: "Search", route: { id: "search" } },
 ];
 
-/** The phone's bottom tab bar: five tabs (the other sections are reached from Home's rows and the Movies page). */
+/** The phone's bottom tab bar: five tabs (the other sections are reached from Home's rows and the Movies page; Search is in the top bar). */
 const PHONE_NAV: { id: string; label: string; glyph: Parameters<typeof icon>[0]; route: Route }[] = [
   { id: "home", label: "Home", glyph: "home", route: { id: "home" } },
   { id: "movies", label: "Movies", glyph: "film", route: { id: "section", section: "movies" } },
   { id: "tv", label: "Series", glyph: "playlist", route: { id: "section", section: "tv" } },
   { id: "live", label: "Live TV", glyph: "tv", route: { id: "live" } },
-  { id: "search", label: "Search", glyph: "search", route: { id: "search" } },
+  { id: "library", label: "Library", glyph: "bookmark", route: { id: "library", tab: "continue" } },
 ];
 
 /** What a player that shows a name calls an episode: the title and the file's name, no extension. */
@@ -86,12 +93,37 @@ class TvModule implements AppModule {
   private active = false;
   private started = false;
   private unlisten: Promise<() => void>[] = [];
-  private ctx: TvCtx;
+  private ctx: TvCtx & { canVlc: boolean };
+  private marks = new Marks();
+  private downloads: DownloadsStore;
+  /** The downloads capsule in the PC's nav, and the dot on the phone's Library tab. */
+  private dlNav = h("button", { class: "tv-nav-dl", type: "button", hidden: true, title: "Downloads", "data-tv-focus": "" });
 
   constructor(private shell: ShellContext) {
+    const backend = isPhone
+      ? phoneBackend({ wifiOnly: () => this.shell.config.tv.wifiOnly })
+      : desktopBackend({
+        dir: () => this.shell.config.tv.downloadDir,
+        play: (d) => this.playDownload(d),
+        show: (d) => this.shell.open({ kind: "folder", path: d.path.replace(/[\\/][^\\/]*$/, "") }),
+      });
+    this.downloads = new DownloadsStore(backend);
     this.ctx = {
       shell,
       loader: this.loader,
+      marks: this.marks,
+      downloads: this.downloads,
+      toggle: (item, list) => this.toggle(item, list),
+      download: (item) => void this.download(item),
+      downloadFiles: (item, files) => void this.downloadFiles(item, files),
+      openMenu: (item, at) => this.openMenu(item, at),
+      fractionOfUrl: (url) => this.fractionOfUrl(url),
+      resumeAt: (url) => this.localPositions(url).reduce((at, p) => Math.max(at, p.at), 0),
+      canVlc: false,
+      openInVlc: (item, url) => this.openInVlc(item, url),
+      share: (item, url) => this.share(item, url),
+      fail: (err) => this.fail(err),
+      openLibrary: (tab) => this.go({ id: "library", tab }),
       play: (item) => this.play(item),
       playUrl: (item, path, siblings) => this.playUrl(item, path, siblings),
       openDetail: (item, from) => this.openDetail(item, from),
@@ -104,6 +136,8 @@ class TvModule implements AppModule {
       pill.addEventListener("click", () => this.go(n.route, true));
       this.pills.set(n.id, pill);
     }
+    this.dlNav.addEventListener("click", () => this.go({ id: "library", tab: "downloads" }));
+    this.downloads.subscribe(() => this.paintDownloads());
     this.back.addEventListener("click", () => this.goBack());
     this.status.addEventListener("click", () => void this.refresh(true));
     if (isPhone) {
@@ -113,7 +147,7 @@ class TvModule implements AppModule {
       this.nav.append(...this.pills.values());
       pullToRefresh(this.scroll, this.pull, () => this.route.id === "home" && !this.detail, () => void this.refresh(true));
     } else {
-      this.nav.append(this.glider, this.back, ...this.pills.values(), h("span", { class: "tv-nav-sep" }), this.status);
+      this.nav.append(this.glider, this.back, ...this.pills.values(), h("span", { class: "tv-nav-sep" }), this.dlNav, this.status);
     }
     this.scroll.append(this.pageEl);
     this.el = h("div", { class: "tvx" }, this.scroll, ...(isPhone ? [this.top, this.pull] : []), this.nav, this.layer);
@@ -144,6 +178,8 @@ class TvModule implements AppModule {
         onTv("tv-changed", () => this.onChanged()),
       );
       void tvApi.state().then((p) => this.onProgress(p), () => undefined);
+      void this.downloads.start();
+      if (!isPhone) void tvApi.vlcAvailable().then((ok) => (this.ctx.canVlc = ok), () => undefined);
       void this.refresh(false);
       this.refreshTimer = window.setInterval(() => void this.refresh(false), 30 * 60 * 1000);
       void this.show(false);
@@ -164,6 +200,7 @@ class TvModule implements AppModule {
     clearTimeout(this.reloadTimer);
     this.hero?.stop();
     this.page?.dispose?.();
+    this.downloads.dispose();
     for (const u of this.unlisten) void u.then((fn) => fn());
   }
 
@@ -232,6 +269,12 @@ class TvModule implements AppModule {
     void this.show(false);
   }
 
+  /** Library's tabs replace each other (Back leaves the Library, not the last tab). */
+  private selectTab(tab: LibraryTab) {
+    this.route = { id: "library", tab };
+    void this.show(false);
+  }
+
   private goBack() {
     const prev = this.history.pop();
     if (!prev) return;
@@ -297,11 +340,19 @@ class TvModule implements AppModule {
       this.home = home;
       this.loader.reset();
       if (!home.total) return put(this.emptyHome());
-      const { hero, rows } = homeRows(home, this.ctx);
+      const resume = await this.resumeEntries().catch(() => []);
+      if (serial !== this.drawSerial) return;
+      this.loader.reset();
+      const { hero, rows } = homeRows(home, this.ctx, resume);
       this.hero = hero;
       const banner = this.banner();
       put(...[hero?.el ?? h("div", { class: "tv-hero-gap" }), banner, ...rows, h("div", { class: "tv-end" })].filter((n): n is HTMLElement => !!n));
       if (this.active) hero?.start();
+    } else if (route.id === "library") {
+      const library = new LibraryPage(this.ctx, route.tab, (tab) => this.selectTab(tab), () => this.resumeEntries(), () => (isPhone ? Promise.resolve("") : tvApi.dlDir(this.shell.config.tv.downloadDir)));
+      this.page = library;
+      put(library.el);
+      await library.load();
     } else if (route.id === "live") {
       const live = new LivePage(this.ctx);
       this.page = live;
@@ -369,15 +420,169 @@ class TvModule implements AppModule {
     void tvApi.played(item.id).catch(() => undefined);
   }
 
+  // ---- the user's lists
+
+  private positions(): Positions {
+    return this.shell.config.video?.positions ?? {};
+  }
+
+  /** The player's resume points for a file: under its address, and under its downloaded copy's path. */
+  private localPositions(url: string) {
+    const out = [this.positions()[url]];
+    const d = this.downloads.byUrl(url);
+    if (d?.state === "done") out.push(this.positions()[d.path]);
+    return out.filter((p): p is NonNullable<typeof p> => !!p);
+  }
+
+  private fractionOfUrl(url: string): number {
+    return Math.max(0, ...this.localPositions(url).map((p) => fractionOf(p)));
+  }
+
+  /** Sets a list's mark on the title (the page and the backend), without a message. */
+  private applyMark(item: Item, list: List, on: boolean) {
+    const before = this.marks.has(item, list);
+    this.marks.set(item, list, on);
+    void tvApi.mark(item.id, list, on).catch((err) => {
+      this.marks.set(item, list, before);
+      this.fail(err);
+    });
+    if (this.active && (this.route.id === "home" || this.route.id === "library") && list !== "watched") this.scheduleReload(500);
+    else if (this.route.id === "library" && !this.detail) this.scheduleReload(500);
+  }
+
+  private toggle(item: Item, list: List) {
+    const on = !this.marks.has(item, list);
+    this.applyMark(item, list, on);
+    const names: Record<List, [string, string]> = {
+      fav: ["Added to My List", "Removed from My List"],
+      later: ["Saved to Watch Later", "Removed from Watch Later"],
+      watched: ["Marked as watched", "Marked as not watched"],
+    };
+    showToast(`${names[list][on ? 0 : 1]}: ${item.title}`, { label: "Undo", run: () => this.applyMark(item, list, !on) }, 4500);
+  }
+
+  /** What the player remembers, as titles: in progress with how far, and films that were finished get marked watched. */
+  private async resumeEntries(): Promise<ContinueEntry[]> {
+    const positions = this.positions();
+    const progress = inProgress(positions);
+    const done = finished(positions);
+    const urls = [...progress.map((p) => p.url), ...done.map((p) => p.url)];
+    if (!urls.length) return [];
+    const byUrl = new Map((await tvApi.byUrls(urls)).map((m) => [m.url, m.item]));
+    for (const f of done) {
+      const item = byUrl.get(f.url);
+      if (item && item.kind === "movie" && !this.marks.has(item, "watched")) this.applyMark(item, "watched", true);
+    }
+    const seen = new Set<string>();
+    const out: ContinueEntry[] = [];
+    for (const p of progress) {
+      const item = byUrl.get(p.url);
+      if (!item || seen.has(titleKey(item))) continue;
+      seen.add(titleKey(item));
+      if (item.kind === "movie" && this.marks.has(item, "watched")) continue;
+      out.push({ item, fraction: p.fraction });
+    }
+    return out.slice(0, 30);
+  }
+
+  // ---- downloads
+
+  private request(item: Item, url: string, label: string, size: number): DownloadRequest {
+    return { key: titleKey(item), itemId: item.id, title: item.title, year: item.year, label, url, size };
+  }
+
+  private async download(item: Item) {
+    if (!this.downloads.canDownload) return this.fail("Downloads work in the Zazabor Home app on a PC and in Zazabor TV on a phone.");
+    if (item.kind === "series") return this.openDetail(item);
+    try {
+      const full = item.videoUrl ? item : Object.assign(item, await tvApi.resolve(item.id));
+      if (!full.videoUrl) throw "No video file was found in that folder.";
+      if (this.downloads.byUrl(full.videoUrl)) return showToast(this.downloads.doneFor(full) ? `${item.title} is already downloaded` : `${item.title} is already in your downloads`, { label: "Downloads", run: () => this.go({ id: "library", tab: "downloads" }) });
+      await this.downloads.add([this.request(full, full.videoUrl, "", full.size)]);
+      showToast(`Downloading ${item.title}`, { label: "Downloads", run: () => this.go({ id: "library", tab: "downloads" }) }, 4500);
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  private async downloadFiles(item: Item, files: { url: string; name: string; size: number }[]) {
+    const fresh = files.filter((f) => !this.downloads.byUrl(f.url));
+    if (!fresh.length) return showToast(files.length === 1 ? "That episode is already in your downloads" : "Those episodes are already in your downloads");
+    try {
+      await this.downloads.add(fresh.map((f) => this.request(item, f.url, f.name, f.size)));
+      showToast(fresh.length === 1 ? `Downloading ${item.title}: 1 episode` : `Downloading ${item.title}: ${fresh.length} episodes`, { label: "Downloads", run: () => this.go({ id: "library", tab: "downloads" }) }, 4500);
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  private playDownload(d: Download) {
+    const title = d.label ? `${d.title} - ${d.label.replace(/\.[a-z0-9]{2,4}$/i, "")}` : d.title;
+    if (d.itemId) void tvApi.played(d.itemId).catch(() => undefined);
+    this.shell.open({ kind: "video", path: d.path, title });
+  }
+
+  private paintDownloads() {
+    const active = this.downloads.active;
+    const got = active.reduce((n, d) => n + d.got, 0);
+    const size = active.reduce((n, d) => n + d.size, 0);
+    const pct = size > 0 ? ` · ${Math.floor((got / size) * 100)}%` : "";
+    this.dlNav.hidden = active.length === 0;
+    this.dlNav.replaceChildren(icon("download", 14), h("span", null, `${active.length}${pct}`));
+    this.dlNav.title = `${active.length} download${active.length === 1 ? "" : "s"} running`;
+    const dot = this.pills.get("library");
+    dot?.classList.toggle("busy", active.length > 0);
+  }
+
+  // ---- the actions menu, VLC and sharing
+
+  private openMenu(item: Item, at: { x: number; y: number } | HTMLElement) {
+    const entries: MenuEntry[] = [
+      { label: item.kind === "series" ? "Watch" : "Play", glyph: "play", run: () => this.play(item) },
+      { label: "Details", glyph: "info", run: () => this.openDetail(item) },
+      { label: "My List", glyph: "heart", on: this.marks.has(item, "fav"), run: () => this.toggle(item, "fav") },
+      { label: "Watch Later", glyph: "clock", on: this.marks.has(item, "later"), run: () => this.toggle(item, "later") },
+      { label: "Watched", glyph: "check", on: this.marks.has(item, "watched"), run: () => this.toggle(item, "watched") },
+    ];
+    if (this.downloads.canDownload) {
+      const saved = item.kind === "movie" ? this.downloads.doneFor(item) : undefined;
+      entries.push(saved
+        ? { label: "Downloaded: play offline copy", glyph: "download", run: () => this.downloads.play(saved) }
+        : { label: item.kind === "series" ? "Download…" : "Download", glyph: "download", run: () => void this.download(item) });
+    }
+    if (item.kind === "movie") {
+      if (isPhone) entries.push({ label: "Share link", glyph: "send", run: () => this.share(item, item.videoUrl || item.folderUrl) });
+      else {
+        entries.push({ label: "Copy link", glyph: "link", run: () => void navigator.clipboard.writeText(item.videoUrl || item.folderUrl).then(() => showToast("Link copied"), () => showToast("Couldn't copy the link")) });
+        if (this.ctx.canVlc && item.videoUrl) entries.push({ label: "Open in VLC", glyph: "external", run: () => this.openInVlc(item, item.videoUrl) });
+      }
+    }
+    showMenu(item.title, entries, at);
+  }
+
+  private openInVlc(item: Item, url: string) {
+    this.mark(item);
+    void tvApi.openVlc(url).catch((err) => this.fail(err));
+  }
+
+  private share(item: Item, url: string) {
+    const text = `${item.title}${item.year ? ` (${item.year})` : ""}\n${url}`;
+    const android = (window as unknown as { ZazaborPlayer?: { share?(text: string): void } }).ZazaborPlayer;
+    if (android?.share) return android.share(text);
+    void navigator.clipboard.writeText(url).then(() => showToast("Link copied"), () => showToast("Couldn't copy the link"));
+  }
+
   private play(item: Item) {
     if (item.kind === "series") {
       void tvApi.episodes(item.id).then((seasons) => {
-        const all = seasons.flatMap((s) => s.episodes.map((e) => e.url));
-        if (!all.length) return this.openDetail(item);
-        this.playUrl(item, all[0], all);
+        const pick = pickEpisode(seasons, (u) => this.fractionOfUrl(u), (u) => this.ctx.resumeAt(u));
+        if (!pick) return this.openDetail(item);
+        this.playUrl(item, pick.url, seasons.flatMap((s) => s.episodes.map((e) => e.url)));
       }, (err) => this.fail(err));
       return;
     }
+    const saved = this.downloads.doneFor(item);
+    if (saved) return this.downloads.play(saved);
     if (item.videoUrl) return this.playUrl(item, item.videoUrl);
     tvApi.resolve(item.id).then((done) => {
       Object.assign(item, done);
@@ -388,8 +593,17 @@ class TvModule implements AppModule {
 
   private playUrl(item: Item, path: string, siblings?: string[]) {
     this.mark(item);
-    const list = siblings && siblings.length > 1 ? siblings : undefined;
-    this.shell.open({ kind: "video", path, siblings: list, title: list ? episodeTitle(item.title, path) : item.title, titles: list?.map((url) => episodeTitle(item.title, url)) });
+    // a downloaded episode plays from its file
+    const own = (url: string) => {
+      const d = this.downloads.byUrl(url);
+      return d?.state === "done" && d.exists ? d : undefined;
+    };
+    const saved = own(path);
+    if (saved && isPhone) return this.downloads.play(saved);
+    const local = (url: string) => (isPhone ? url : own(url)?.path ?? url);
+    const files = siblings && siblings.length > 1 ? siblings.map(local) : undefined;
+    const names = siblings && siblings.length > 1 ? siblings.map((url) => episodeTitle(item.title, url)) : undefined;
+    this.shell.open({ kind: "video", path: local(path), siblings: files, title: names ? episodeTitle(item.title, path) : item.title, titles: names });
   }
 
   // ---- the detail page
@@ -411,6 +625,7 @@ class TvModule implements AppModule {
 
   private closeDetail(restore: boolean) {
     if (!this.detail) return;
+    this.detail.dispose();
     this.detail = null;
     this.layer.classList.remove("open");
     this.layer.replaceChildren();
@@ -495,6 +710,7 @@ class TvModule implements AppModule {
     if (e.ctrlKey || e.metaKey || e.altKey) return false;
     const typing = e.target instanceof HTMLInputElement;
     if (e.key === "Escape") {
+      if (menuIsOpen()) return closeMenu(), true;
       if (this.detail) return this.closeDetail(true), true;
       if (typing && (e.target as HTMLInputElement).value) {
         (e.target as HTMLInputElement).value = "";
@@ -518,6 +734,16 @@ class TvModule implements AppModule {
     if ((e.key === "p" || e.key === "P") && !typing && focused?.classList.contains("tv-card")) {
       focused.dispatchEvent(new CustomEvent("tv-play"));
       return true;
+    }
+    if (!isPhone && !typing && !menuIsOpen()) {
+      const key = e.key.toLowerCase();
+      const target = key === "f" || key === "l" || key === "d" ? this.detail?.current ?? itemOf(focused) : undefined;
+      if (target) {
+        if (key === "f") this.toggle(target, "fav");
+        else if (key === "l") this.toggle(target, "later");
+        else void this.download(target);
+        return true;
+      }
     }
     if (e.key === "/" && !typing) {
       this.go({ id: "search" }, true);

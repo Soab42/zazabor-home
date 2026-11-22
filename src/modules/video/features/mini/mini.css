@@ -1,8 +1,8 @@
 /* ---- Mini player (docs/design/vlc/PLAYER.md, frame 970:3091) ---------------------------------
    While `.vp.mini` is set the window is just the picture: the module covers it like fullscreen
    does and its rail, bars, sidebar and panels are hidden. Moving the pointer over it fades in
-   this overlay (150ms in, 300ms out once the pointer rests): a dark gradient top and bottom,
-   corner buttons, the transport in the middle, the title and a thin seek bar on the bottom edge.
+   this overlay (150ms in, 300ms out once the pointer rests): a dark gradient,
+   the transport in the middle, one strip with the title and small buttons and a thin seek bar on the bottom edge.
    Over video the controls are the dark glass kind with white symbols, as in the full player. */
 
 .vp.mini { position: fixed; inset: 0; z-index: 40; background: black; }
@@ -23,24 +23,22 @@
 .vp-mini-drag { position: absolute; inset: 0; pointer-events: auto; cursor: grab; }
 .vp-mini-drag:active { cursor: grabbing; }
 
-/* Everything that fades: the gradients are its background, the controls its children. */
+/* Everything that fades: the gradients are its background, the controls its children. It and its
+   layout boxes never take the pointer: a press on them reaches the drag layer, so the whole player
+   moves the window. Only the buttons, the volume and the seek line are interactive. */
 .vp-mini-chrome {
-  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; padding: 8px 8px 0; opacity: 0;
+  position: absolute; inset: 0; opacity: 0;
   background:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0) 34%),
-    linear-gradient(0deg, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0) 42%);
+    linear-gradient(0deg, rgba(0, 0, 0, 0.66), rgba(0, 0, 0, 0) 46%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0) 30%);
   transition: opacity 300ms var(--ease-out); pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
+.vp-mini-chrome * { pointer-events: none; }
 .vp-mini.shown .vp-mini-chrome { opacity: 1; transition-duration: 150ms; }
-.vp-mini.shown .vp-mini-chrome > * > *, .vp-mini.shown .vp-mini-bottom { pointer-events: auto; }
+.vp-mini.shown .vp-mini-btn:not(:disabled), .vp-mini.shown .vp-mini-seek, .vp-mini.shown .vp-mini-volume { pointer-events: auto; }
 .vp-mini:not(.shown) { cursor: none; }
 
-.vp-mini-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.vp-mini-corner { display: flex; align-items: center; gap: 4px; }
-
-.vp-mini-mid { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 14px; pointer-events: none; }
-.vp-mini-mid > * { pointer-events: none; }
-.vp-mini.shown .vp-mini-mid > * { pointer-events: auto; }
+.vp-mini-mid { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 14px; }
 
 /* Round glass buttons: a faint light gradient, a hairline rim, springy presses. */
 .vp-mini-btn {
@@ -55,16 +53,29 @@
 .vp-mini-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus), 0 4px 12px rgba(0, 0, 0, 0.28); }
 .vp-mini-btn:disabled { opacity: 0.4; pointer-events: none; }
 .vp-mini-btn.active { color: var(--accent); }
+.vp-mini-actions .vp-mini-btn { width: 24px; height: 24px; }
 .vp-mini-btn.side { width: 34px; height: 34px; }
 .vp-mini-btn.primary { width: 52px; height: 52px; }
 
-/* The volume: a speaker that opens its slider while the pointer is on it. */
-.vp-mini-vol { display: flex; align-items: center; gap: 2px; border-radius: 14px; }
-.vp-mini-volume { width: 0; opacity: 0; margin: 0; transition: width 200ms var(--ease-out), opacity 150ms, margin 200ms var(--ease-out); }
-.vp-mini-vol:hover .vp-mini-volume, .vp-mini-vol:focus-within .vp-mini-volume { width: 64px; margin: 0 6px 0 4px; opacity: 1; }
+/* The volume: a speaker that opens a small slider above it while the pointer is on it. */
+.vp-mini-vol { position: relative; display: flex; }
+.vp-mini-volume-pop {
+  position: absolute; right: -4px; bottom: 100%; display: none; padding: 0 0 8px;
+}
+.vp-mini-volume-pop > div {
+  display: flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.07)); backdrop-filter: blur(14px) saturate(1.5);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.18), 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+.vp-mini-vol:hover .vp-mini-volume-pop, .vp-mini-vol:focus-within .vp-mini-volume-pop { display: block; }
+.vp-mini.shown .vp-mini-volume-pop, .vp-mini.shown .vp-mini-volume-pop > div { pointer-events: auto; }
+.vp-mini-volume { width: 84px; margin: 0; }
 
-.vp-mini-bottom { position: relative; margin: 0 -8px; padding: 0 12px 10px; }
-.vp-mini-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+/* One slim strip along the bottom: title and time on the left, small buttons on the right; the seek line is under it. */
+.vp-mini-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 8px 12px; }
+.vp-mini-strip { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.vp-mini-info { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.vp-mini-actions { display: flex; align-items: center; gap: 4px; flex: none; }
 .vp-mini-title { min-width: 0; overflow: hidden; font-size: var(--text-sm); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .vp-mini-time { flex: none; color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 
@@ -77,8 +88,16 @@
 .vp-mini-seek:hover .vp-mini-seek-fill, .vp-mini-seek.dragging .vp-mini-seek-fill, .vp-mini-seek:focus-visible .vp-mini-seek-fill { height: 5px; }
 .vp-mini-seek:hover .vp-mini-seek-thumb, .vp-mini-seek.dragging .vp-mini-seek-thumb, .vp-mini-seek:focus-visible .vp-mini-seek-thumb { opacity: 1; transform: none; }
 
-/* A very small window keeps just the picture's essentials. */
-@container (max-width: 300px) {
-  .vp-mini-time, .vp-mini-btn.side { display: none; }
-  .vp-mini-btn.primary { width: 44px; height: 44px; }
+/* A very small window keeps just the picture's essentials: the title and time go first, then previous / next. */
+@container (max-width: 330px) {
+  .vp-mini-info { visibility: hidden; }
+}
+@container (max-width: 250px) {
+  .vp-mini-btn.side, .vp-mini-vol, .vp-mini-actions .vp-mini-btn.active { display: none; }
+  .vp-mini-btn.primary { width: 40px; height: 40px; }
+}
+/* A very short window lifts the transport clear of the strip. */
+@container (max-height: 130px) {
+  .vp-mini-mid { padding-bottom: 24px; }
+  .vp-mini-bottom { padding-bottom: 10px; }
 }

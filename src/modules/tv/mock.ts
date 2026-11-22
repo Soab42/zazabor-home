@@ -1,4 +1,4 @@
-import type { Channel, Discovered, Episode, Events, Filter, Home, Item, Page, Progress, Season, Section, TvMock } from "./api";
+import type { List, DownloadRequest, Channel, Discovered, Download, Episode, Events, Filter, Home, Item, Page, Progress, Season, Section, TvMock } from "./api";
 
 /**
  * The dev stand-in for the Rust side: a made-up catalog with real DhakaFlix-style names, posters
@@ -166,6 +166,9 @@ function build(): Item[] {
         added: NOW - (i * 3 + (n % 5)) * DAY * (s.y >= 2024 ? 1 : 12) - (n % 9) * 3600000,
         rank: s.rank ?? null,
         played: 0,
+        fav: false,
+        later: false,
+        watched: false,
       });
     });
   }
@@ -196,17 +199,20 @@ export function createMock(mode: string): TvMock {
     fav: i === 1 || i === 8 || i === 13, watched: i === 2 ? NOW - 3600000 : i === 9 ? NOW - 86400000 : i === 13 ? NOW - 7200000 : 0, status: "" as Channel["status"],
   }));
   if (mode === "nolive") channels = [];
+  const downloads: Download[] = [];
   const progress: Progress = { running: false, done: 0, total: 0, items: all.length, reachable: offline ? false : true, error: offline ? "Can't reach DhakaFlix at 172.16.50.14 — are you on the ISP's network?" : "", lastCrawl: NOW - 3600000 };
 
   const filtered = (f: Filter, withYear = true, withQuality = true) => {
-    let list = all.filter((i) => (!f.section || i.section === f.section) && (!f.kind || i.kind === f.kind) && (!f.categoryUrl || i.categoryUrl === f.categoryUrl) && (!f.played || i.played > 0));
+    const stamp = (i: Item) => (f.list ? marked.get(`${f.list}:${i.id}`) ?? 0 : 0);
+    let list = all.filter((i) => (!f.section || i.section === f.section) && (!f.kind || i.kind === f.kind) && (!f.categoryUrl || i.categoryUrl === f.categoryUrl) && (!f.played || i.played > 0) && (!f.list || i[f.list]) && (!f.hideWatched || !i.watched) && (!f.tag || i.tags.includes(f.tag)));
+    if (f.list) list = list.sort((a, b) => stamp(b) - stamp(a));
     if (f.q) for (const w of f.q.toLowerCase().split(/\s+/)) list = list.filter((i) => `${i.title} ${i.category}`.toLowerCase().includes(w));
     if (withYear && f.year) list = list.filter((i) => i.year === f.year);
     if (withQuality && f.quality) list = list.filter((i) => i.quality === f.quality);
     return list;
   };
-  const sorted = (list: Item[], sort: Filter["sort"]) =>
-    [...list].sort((a, b) => sort === "az" ? a.title.localeCompare(b.title) : sort === "year" ? (b.year ?? 0) - (a.year ?? 0) || b.added - a.added : sort === "rank" ? (a.rank ?? 1e5) - (b.rank ?? 1e5) : sort === "played" ? b.played - a.played : b.added - a.added);
+  const marked = new Map<string, number>();
+  const sorted = (list: Item[], sort: Filter["sort"]) => sort === "marked" ? list : [...list].sort((a, b) => sort === "az" ? a.title.localeCompare(b.title) : sort === "year" ? (b.year ?? 0) - (a.year ?? 0) || b.added - a.added : sort === "rank" ? (a.rank ?? 1e5) - (b.rank ?? 1e5) : sort === "played" ? b.played - a.played : b.added - a.added);
   const query = (f: Filter) => {
     const list = sorted(filtered(f), f.sort);
     return list.slice(f.offset ?? 0, (f.offset ?? 0) + (f.limit ?? 60));
@@ -234,6 +240,8 @@ export function createMock(mode: string): TvMock {
       recent: query({ played: true, sort: "played", limit: 20 }),
       new: query({ limit: 30 }),
       top: topYear ? query({ kind: "movie", year: topYear, limit: 10 }) : [],
+      fav: query({ list: "fav", sort: "marked", limit: 30 }),
+      later: query({ list: "later", sort: "marked", limit: 30 }),
       topYear,
       categories: CATS.filter((c) => all.some((i) => i.categoryUrl === c.url)).map((c) => ({
         url: c.url, label: c.label, section: c.section, kind: c.series ? "series" : "movie", count: all.filter((i) => i.categoryUrl === c.url).length * (c.section === "movies" ? 46 : 18),
@@ -279,6 +287,38 @@ export function createMock(mode: string): TvMock {
           if (item) item.played = Date.now();
           return null;
         }
+        case "tv_mark": {
+          const item = all.find((i) => i.id === args.id);
+          if (item) {
+            for (const i of all) if (i.title === item.title && i.year === item.year && i.kind === item.kind) {
+              i[args.list as List] = args.on as boolean;
+              marked.set(`${args.list}:${i.id}`, Date.now());
+            }
+          }
+          return null;
+        }
+        case "tv_by_urls": return [];
+        case "tv_vlc_available": return true;
+        case "tv_open_vlc": return null;
+        case "tv_dl_dir": return "/home/you/Downloads/Zazabor TV";
+        case "tv_dl_list": return downloads.map((d) => ({ ...d }));
+        case "tv_dl_add": {
+          for (const r of args.requests as DownloadRequest[]) {
+            const d: Download = { id: `d${downloads.length + 1}`, key: r.key, itemId: r.itemId, title: r.title, year: r.year, label: r.label, url: r.url, path: `/home/you/Downloads/Zazabor TV/${r.title}/${r.url.split("/").pop()}`, size: r.size || 1.4e9, got: 0, state: "running", error: "", added: Date.now(), finished: 0, exists: true };
+            downloads.unshift(d);
+            const tick = window.setInterval(() => {
+              if (d.state !== "running") return;
+              d.got = Math.min(d.size, d.got + d.size / 40);
+              if (d.got >= d.size) (d.state = "done", d.finished = Date.now(), clearInterval(tick));
+              emit("tv-downloads", downloads.map((x) => ({ ...x })));
+            }, 400);
+          }
+          emit("tv-downloads", downloads.map((x) => ({ ...x })));
+          return [];
+        }
+        case "tv_dl_pause": { const d = downloads.find((x) => x.id === args.id); if (d) d.state = "paused"; emit("tv-downloads", downloads.map((x) => ({ ...x }))); return null; }
+        case "tv_dl_resume": { const d = downloads.find((x) => x.id === args.id); if (d) d.state = "running"; emit("tv-downloads", downloads.map((x) => ({ ...x }))); return null; }
+        case "tv_dl_remove": { const at = downloads.findIndex((x) => x.id === args.id); if (at >= 0) downloads.splice(at, 1); emit("tv-downloads", downloads.map((x) => ({ ...x }))); return null; }
         case "tv_cache_info": return { bytes: 84 * 1048576, files: 412, items: all.length, channels: channels.length, cap: 300 * 1048576 };
         case "tv_clear_cache": return null;
         case "tv_live_refresh": return [{ id: (args.sources as { id: string }[])[0]?.id ?? "s1", count: channels.length, error: "" }];

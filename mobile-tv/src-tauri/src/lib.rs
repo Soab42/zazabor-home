@@ -67,6 +67,8 @@ pub fn run() {
             tv::tv_resolve,
             tv::tv_episodes,
             tv::tv_played,
+            tv::tv_mark,
+            tv::tv_by_urls,
             tv::tv_cache_info,
             tv::tv_clear_cache,
             tv::tv_live_refresh,

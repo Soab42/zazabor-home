@@ -37,6 +37,7 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
   const statusBox = h("div", { class: "tv-set-box" });
   const cacheBox = h("div", { class: "tv-set-box" });
   const liveBox = h("div", { class: "tv-set-box" });
+  const downloadsBox = h("div", { class: "tv-set-box" });
 
   function drawServers() {
     const rows = tv().sources.map((source) => {
@@ -194,6 +195,43 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
       ...(tv().playlists.length ? [row("Playlists", playlistMessage || null, button("Refresh playlists", () => void readPlaylists()))] : []));
   }
 
+  // ---- downloads
+  function drawDownloads() {
+    if (isPhone) {
+      const input = h("input", { type: "checkbox", class: "switch", role: "switch" });
+      input.checked = tv().wifiOnly;
+      input.addEventListener("change", () => {
+        tv().wifiOnly = input.checked;
+        save();
+      });
+      downloadsBox.replaceChildren(
+        h("label", { class: "sf-row sf-toggle" }, h("div", { class: "st-text" }, h("span", { class: "sf-label" }, "Download only on Wi-Fi"), h("p", { class: "sf-hint" }, "Off by default: the movie servers are usually reached over Wi-Fi or the ISP's own network, and a download waits when there is no connection. Downloads are saved in the app's Movies folder and listed in Library.")), input));
+      return;
+    }
+    const input = h("input", { class: "tv-input wide", type: "text", spellcheck: false, autocomplete: "off", value: tv().downloadDir, "aria-label": "Download folder", placeholder: "~/Downloads/Zazabor TV" });
+    input.addEventListener("change", () => {
+      tv().downloadDir = input.value.trim();
+      save();
+    });
+    const choose = button("Choose…", async () => {
+      const { open: openDialog } = await import("../../shared/dialog");
+      const path = await openDialog({ title: "Where downloads go", directory: true, defaultPath: tv().downloadDir || undefined });
+      if (path) {
+        tv().downloadDir = path;
+        input.value = path;
+        save();
+      }
+    });
+    const reset = button("Default", () => {
+      tv().downloadDir = "";
+      input.value = "";
+      save();
+    }, "btn small ghost");
+    downloadsBox.replaceChildren(
+      h("p", { class: "sf-hint" }, "Each title gets its own folder inside, named like “Title (Year)”. A download that stops (pause, an error, closing Zazabor) carries on from where it was."),
+      h("div", { class: "tv-set-add" }, input, h("div", { class: "tv-set-buttons" }, choose, reset)));
+  }
+
   // ---- put together
   const group = (el: HTMLElement): SettingsRow[] => [{ label: "", el }];
   drawServers();
@@ -201,6 +239,7 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
   drawStatus();
   drawCache();
   drawLive();
+  drawDownloads();
   void onTv("tv-progress", (p) => {
     progress = p;
     drawStatus();
@@ -211,6 +250,7 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
     refresh() {
       drawServers();
       drawLive();
+      drawDownloads();
       void discover();
       refreshCache();
       void tvApi.state().then((p) => ((progress = p), drawStatus()), () => undefined);
@@ -220,6 +260,7 @@ export function tvCategory(host: { readonly config: Config; configChanged(): voi
       { title: "Categories", rows: group(categoriesBox) },
       { title: "Catalog", rows: group(statusBox) },
       { title: "Cache", rows: group(cacheBox) },
+      { title: "Downloads", rows: group(downloadsBox) },
       { title: "Live TV", rows: group(liveBox) },
     ],
   };

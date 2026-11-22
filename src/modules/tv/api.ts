@@ -42,7 +42,13 @@ export interface Item {
   added: number;
   rank: number | null;
   played: number;
+  /** The user's lists: My List, Watch Later, Watched. They belong to the title, not to a folder. */
+  fav: boolean;
+  later: boolean;
+  watched: boolean;
 }
+
+export type List = "fav" | "later" | "watched";
 
 export interface CatRow {
   url: string;
@@ -58,6 +64,8 @@ export interface Home {
   recent: Item[];
   new: Item[];
   top: Item[];
+  fav: Item[];
+  later: Item[];
   topYear: number | null;
   categories: CatRow[];
   total: number;
@@ -70,8 +78,13 @@ export interface Filter {
   q?: string;
   year?: number;
   quality?: string;
-  sort?: "new" | "az" | "year" | "rank" | "played";
+  sort?: "new" | "az" | "year" | "rank" | "played" | "marked";
   played?: boolean;
+  /** Only titles on one of the user's lists (with `sort: "marked"`: the latest added first). */
+  list?: List;
+  hideWatched?: boolean;
+  /** Only titles carrying this tag ("Dual Audio", "NF", "BluRay"…). */
+  tag?: string;
   /** Instead of a page: every folder of this title (its qualities). */
   sameAs?: string;
   limit?: number;
@@ -150,7 +163,41 @@ export interface SourceResult {
   error: string;
 }
 
+/** One file being (or done being) downloaded, on the PC (`tv/download.rs`) or the phone (DownloadManager). */
+export interface Download {
+  id: string;
+  /** The title's key (`titleKey`) cards are matched by. */
+  key: string;
+  itemId: string;
+  title: string;
+  year: number | null;
+  /** An episode's file name; empty for a film. */
+  label: string;
+  url: string;
+  /** The finished file (a path on the PC, a content:// URI's name on the phone). */
+  path: string;
+  size: number;
+  got: number;
+  state: "queued" | "running" | "paused" | "failed" | "done";
+  error: string;
+  added: number;
+  finished: number;
+  /** A finished download whose file is still there. */
+  exists: boolean;
+}
+
+export interface DownloadRequest {
+  key: string;
+  itemId: string;
+  title: string;
+  year: number | null;
+  label: string;
+  url: string;
+  size: number;
+}
+
 export interface Events {
+  "tv-downloads": Download[];
   "tv-progress": Progress;
   "tv-changed": null;
   "tv-live-changed": null;
@@ -173,6 +220,9 @@ export function sizeText(bytes: number): string {
 export function errorText(err: unknown): string {
   return typeof err === "string" ? err : err instanceof Error ? err.message : "Something went wrong.";
 }
+
+/** What identifies a title across folders (its 720p and 1080p ones): the lists and downloads use it. */
+export const titleKey = (item: Pick<Item, "title" | "year" | "kind">) => `${item.title.toLowerCase()}|${item.year ?? 0}|${item.kind}`;
 
 export const newId = () => Math.random().toString(36).slice(2, 10);
 
@@ -224,6 +274,16 @@ export const tvApi = {
   resolve: (id: string) => call<Item>("tv_resolve", { id }),
   episodes: (id: string) => call<Season[]>("tv_episodes", { id }),
   played: (id: string) => call<void>("tv_played", { id }),
+  mark: (id: string, list: List, on: boolean) => call<void>("tv_mark", { id, list, on }),
+  byUrls: (urls: string[]) => call<{ url: string; item: Item }[]>("tv_by_urls", { urls }),
+  dlDir: (dir: string) => call<string>("tv_dl_dir", { dir: dir || null }),
+  dlAdd: (requests: DownloadRequest[], dir: string) => call<Download[]>("tv_dl_add", { requests, dir: dir || null }),
+  dlList: () => call<Download[]>("tv_dl_list"),
+  dlPause: (id: string) => call<void>("tv_dl_pause", { id }),
+  dlResume: (id: string) => call<void>("tv_dl_resume", { id }),
+  dlRemove: (id: string, deleteFile: boolean) => call<void>("tv_dl_remove", { id, deleteFile }),
+  vlcAvailable: () => call<boolean>("tv_vlc_available"),
+  openVlc: (url: string) => call<void>("tv_open_vlc", { url }),
   cacheInfo: () => call<CacheInfo>("tv_cache_info"),
   clearCache: (catalogToo = false) => call<void>("tv_clear_cache", { catalogToo }),
   liveRefresh: (settings: TvSettings) => call<SourceResult[]>("tv_live_refresh", { sources: settings.playlists }),

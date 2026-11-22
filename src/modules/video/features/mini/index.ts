@@ -12,9 +12,9 @@ import "./mini.css";
 /**
  * The mini player (docs/design/vlc/PLAYER.md, frame 970:3091): the window shrinks to just the
  * picture, always on top, at the video's own aspect ratio. Moving the pointer over it fades in
- * glass controls (title, previous / play / next, a thin seek bar along the bottom edge, and in the
- * corners: close, pin, volume, back to the full player); they fade out when the pointer rests.
- * Drag the picture to move the window; double-click it (or press Escape / Ctrl+M) to return.
+ * glass controls (previous / play / next in the middle, and a thin seek bar along the bottom edge under a
+ * strip along the bottom: title, time, volume, pin, back to the full player, close); they fade out when
+ * the pointer rests. Press and hold anywhere on it to move the window; double-click it (or press Escape / Ctrl+M) to return.
  */
 
 /** Matches `minWidth` / `minHeight` in tauri.conf.json: the window API cannot read the minimum back. */
@@ -31,6 +31,7 @@ interface Saved {
   size: PhysicalSize;
   position: PhysicalPosition;
   alwaysOnTop: boolean;
+  decorated: boolean;
 }
 
 export function createMiniFeature(ctx: VideoContext): VideoFeature {
@@ -65,18 +66,21 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
   const next = iconButton("next", "Next", () => player.next(), " side");
   const closeButton = iconButton("close", "Close the mini player and stop", () => void closeAndStop());
   const pinButton = iconButton("pin", "Keep on top", () => void togglePin(), " active");
-  const returnButton = iconButton("fullscreen", "Back to the full player (double-click the picture)", () => void exit());
+  const returnButton = iconButton("fullscreen", "Back to the full player", () => void exit());
   const muteButton = iconButton("volume", "Mute", () => player.toggleMute());
   const volume = h("input", { class: "vp-mini-volume", type: "range", min: 0, max: MAX_VOLUME * 100, step: 1, "aria-label": "Volume" });
   volume.addEventListener("input", () => player.setVolume(Number(volume.value) / 100));
-  const volumeBox = h("div", { class: "vp-mini-vol" }, muteButton, volume);
-  const dragLayer = h("div", { class: "vp-mini-drag"});
+  const volumeBox = h("div", { class: "vp-mini-vol" }, muteButton, h("div", { class: "vp-mini-volume-pop" }, h("div", {}, volume)));
+  const dragLayer = h("div", { class: "vp-mini-drag" });
+  // Only the buttons, the volume and the seek line take the pointer; everything else in the overlay
+  // lets presses through to `dragLayer`, so holding anywhere on the player moves the window.
   const chrome = h("div", { class: "vp-mini-chrome" },
-    h("div", { class: "vp-mini-top" },
-      h("div", { class: "vp-mini-corner" }, closeButton, pinButton),
-      h("div", { class: "vp-mini-corner" }, volumeBox, returnButton)),
     h("div", { class: "vp-mini-mid" }, prev, play, next),
-    h("div", { class: "vp-mini-bottom" }, h("div", { class: "vp-mini-row" }, titleEl, timeEl), seek));
+    h("div", { class: "vp-mini-bottom" },
+      h("div", { class: "vp-mini-strip" },
+        h("div", { class: "vp-mini-info" }, titleEl, timeEl),
+        h("div", { class: "vp-mini-actions" }, volumeBox, pinButton, returnButton, closeButton)),
+      seek));
   const overlay = h("div", { class: "vp-mini", hidden: true }, dragLayer, chrome);
   root?.append(overlay);
 
@@ -316,7 +320,7 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
           return;
         }
       }
-      saved = { size: await win.innerSize(), position: await win.outerPosition(), alwaysOnTop: await win.isAlwaysOnTop() };
+      saved = { size: await win.innerSize(), position: await win.outerPosition(), alwaysOnTop: await win.isAlwaysOnTop(), decorated: await win.isDecorated().catch(() => true) };
       ctx.closePanel();
       ctx.showPlayer();
       fitted = `${player.state.videoWidth}x${player.state.videoHeight}`;
@@ -325,6 +329,8 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
       pinned = true;
       pinButton.classList.add("active");
       await win.setAlwaysOnTop(true);
+      // No OS title bar on the mini window: it is only the picture.
+      await win.setDecorations(false).catch((err) => console.warn("Could not hide the title bar:", err));
       await moveToCorner(win, size);
       unlistenResize = await win.onResized(keepAspect);
       active = true;
@@ -366,6 +372,7 @@ export function createMiniFeature(ctx: VideoContext): VideoFeature {
     saved = null;
     try {
       await win.setAlwaysOnTop(before?.alwaysOnTop ?? false);
+      await win.setDecorations(before?.decorated ?? true).catch(() => undefined);
       await win.setMinSize(new LogicalSize(NORMAL_MIN.width, NORMAL_MIN.height));
       if (before) {
         await win.setSize(before.size);

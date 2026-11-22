@@ -189,6 +189,10 @@ export interface TvSettings {
   overrides: Record<string, boolean>;
   /** M3U / M3U8 playlists for Live TV: a URL or a file path. Nothing is added until the user does so. */
   playlists: { id: string; name: string; url: string }[];
+  /** Where downloads go on the PC; empty is ~/Downloads/Zazabor TV. */
+  downloadDir: string;
+  /** Zazabor TV on a phone: download only on Wi-Fi (default: any network; BDIX is usually Wi-Fi or the ISP). */
+  wifiOnly: boolean;
 }
 
 export const DEFAULT_TV_SOURCE = "http://172.16.50.14";
@@ -205,7 +209,7 @@ function normalizeTv(raw: Partial<TvSettings> | undefined): TvSettings {
   const playlists = Array.isArray(raw?.playlists)
     ? raw.playlists.map((p) => ({ id: text(p?.id, 40), name: text(p?.name, 80), url: text(p?.url, 4096) })).filter((p) => p.id && p.url).slice(0, 24)
     : [];
-  return { sources, overrides, playlists };
+  return { sources, overrides, playlists, downloadDir: text(raw?.downloadDir, 1024), wifiOnly: raw?.wifiOnly === true };
 }
 
 /** The Apps section (src/modules/apps). */

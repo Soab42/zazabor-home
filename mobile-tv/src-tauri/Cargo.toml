@@ -1,6 +1,6 @@
 [package]
 name = "zazabor-tv"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zazabor TV for Android"
 edition = "2021"
 

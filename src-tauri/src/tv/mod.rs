@@ -6,6 +6,10 @@
 
 mod catalog;
 mod crawl;
+#[cfg(not(target_os = "android"))]
+pub mod download;
+#[cfg(not(target_os = "android"))]
+pub mod external;
 mod listing;
 mod live;
 mod names;
@@ -63,6 +67,8 @@ pub fn init(app: AppHandle, data_dir: PathBuf, cache_dir: PathBuf) {
     };
     // the first poster cache (downscaled copies) is gone: its titles fetch full-size ones when shown
     let _ = std::fs::remove_dir_all(cache_dir.join("tv").join("posters"));
+    #[cfg(not(target_os = "android"))]
+    download::on_start(&conn);
     let last = catalog::meta_get(&conn, "last_crawl").and_then(|v| v.parse().ok()).unwrap_or(0);
     let _ = STATE.set(State {
         app,
@@ -375,6 +381,9 @@ pub struct Home {
     pub recent: Vec<Item>,
     pub new: Vec<Item>,
     pub top: Vec<Item>,
+    /// My List and Watch Later, the latest added first.
+    pub fav: Vec<Item>,
+    pub later: Vec<Item>,
     pub top_year: Option<i32>,
     pub categories: Vec<CatRow>,
     pub total: i64,
@@ -393,6 +402,8 @@ pub fn tv_home() -> Result<Home> {
     }
     let recent = q(Filter { played: true, sort: Some("played".into()), limit: Some(20), ..Default::default() })?;
     let new = q(Filter { limit: Some(30), ..Default::default() })?;
+    let fav = q(Filter { list: Some("fav".into()), sort: Some("marked".into()), limit: Some(30), ..Default::default() })?;
+    let later = q(Filter { list: Some("later".into()), sort: Some("marked".into()), limit: Some(30), ..Default::default() })?;
     let (years, _) = catalog::facets(&db, &Filter { kind: Some("movie".into()), ..Default::default() })?;
     let top_year = years.iter().find(|(y, n)| *n >= 10 && *y <= 2100).map(|(y, _)| *y).or(years.first().map(|(y, _)| *y));
     let top = match top_year {
@@ -418,7 +429,7 @@ pub fn tv_home() -> Result<Home> {
             }
         });
     }
-    Ok(Home { hero, recent, new, top, top_year, categories, total })
+    Ok(Home { hero, recent, new, top, fav, later, top_year, categories, total })
 }
 
 #[derive(Serialize)]
@@ -446,6 +457,25 @@ pub fn tv_items(filter: Filter, facets: Option<bool>) -> Result<Page> {
 pub fn tv_played(id: String) -> Result<()> {
     catalog::touch_played(&state()?.db(), &id, now_ms());
     Ok(())
+}
+
+/// Puts a title on (or takes it off) My List, Watch Later or Watched.
+#[tauri::command]
+pub fn tv_mark(id: String, list: String, on: bool) -> Result<()> {
+    catalog::set_mark(&state()?.db(), &id, &list, on, now_ms())
+}
+
+#[derive(Serialize)]
+pub struct Matched {
+    pub url: String,
+    pub item: Item,
+}
+
+/// The titles that files or episodes (the Video player's resume points) belong to.
+#[tauri::command]
+pub fn tv_by_urls(urls: Vec<String>) -> Result<Vec<Matched>> {
+    let db = state()?.db();
+    Ok(catalog::by_urls(&db, &urls).into_iter().map(|(url, item)| Matched { url, item }).collect())
 }
 
 #[derive(Serialize)]

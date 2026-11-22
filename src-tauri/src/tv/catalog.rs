@@ -65,6 +65,10 @@ pub struct Item {
     pub added: i64,
     pub rank: Option<u32>,
     pub played: i64,
+    /// My List, Watch Later and Watched: the user's marks on the title (kept across catalog refreshes).
+    pub fav: bool,
+    pub later: bool,
+    pub watched: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -76,9 +80,15 @@ pub struct Filter {
     pub q: Option<String>,
     pub year: Option<i32>,
     pub quality: Option<String>,
-    /// "new" (server time), "az", "year", "rank" or "played".
+    /// "new" (server time), "az", "year", "rank", "played" or "marked" (latest added to `list` first).
     pub sort: Option<String>,
     pub played: bool,
+    /// Only titles on one of the user's lists: "fav", "later" or "watched".
+    pub list: Option<String>,
+    /// Leave out the titles marked watched.
+    pub hide_watched: bool,
+    /// Only titles carrying this tag ("Dual Audio", "NF", "BluRay"…).
+    pub tag: Option<String>,
     /// Instead of a page: every folder of this title (its qualities), ungrouped.
     pub same_as: Option<String>,
     pub limit: Option<i64>,
@@ -102,6 +112,8 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS items_added ON items(added);
 CREATE INDEX IF NOT EXISTS items_cat ON items(category_url);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- the user's lists, keyed by the title (name, year, kind) rather than a folder, so they outlive a catalog refresh
+CREATE TABLE IF NOT EXISTS marks (key TEXT NOT NULL, list TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(key, list));
 ";
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -115,6 +127,8 @@ pub fn open(path: &Path) -> Result<Connection> {
 
 pub fn init(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA).map_err(db_err)?;
+    #[cfg(not(target_os = "android"))]
+    super::download::schema(conn)?;
     super::live::schema(conn)
 }
 
@@ -185,6 +199,11 @@ fn quality_rank(q: &str) -> u8 {
     }
 }
 
+/// What identifies a title for the user's lists (SQL, so the same text is made everywhere).
+const MARK_KEY: &str = "lower(title)||'|'||COALESCE(year,0)||'|'||kind";
+
+pub const LISTS: [&str; 3] = ["fav", "later", "watched"];
+
 const COLUMNS: &str = "id,title,year,quality,tags,kind,section,category,category_url,folder_url,video_url,size,poster,resolved,added,rank,played";
 
 fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
@@ -220,11 +239,66 @@ fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
         added: r.get(14)?,
         rank: r.get(15)?,
         played: r.get(16)?,
+        fav: false,
+        later: false,
+        watched: false,
     })
 }
 
+/// Sets the list flags of `items` from the user's marks.
+fn fill_marks(conn: &Connection, items: &mut [Item]) {
+    if items.is_empty() {
+        return;
+    }
+    let sql = format!("SELECT id, EXISTS(SELECT 1 FROM marks m WHERE m.list='fav' AND m.key={MARK_KEY}), EXISTS(SELECT 1 FROM marks m WHERE m.list='later' AND m.key={MARK_KEY}), EXISTS(SELECT 1 FROM marks m WHERE m.list='watched' AND m.key={MARK_KEY}) FROM items WHERE id IN ({})", vec!["?"; items.len()].join(","));
+    let Ok(mut stmt) = conn.prepare(&sql) else { return };
+    let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    let Ok(rows) = stmt.query_map(params_from_iter(ids.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?, r.get::<_, bool>(3)?))) else { return };
+    let flags: std::collections::HashMap<String, (bool, bool, bool)> = rows.filter_map(|r| r.ok()).map(|(id, a, b, c)| (id, (a, b, c))).collect();
+    for item in items.iter_mut() {
+        if let Some(&(fav, later, watched)) = flags.get(&item.id) {
+            (item.fav, item.later, item.watched) = (fav, later, watched);
+        }
+    }
+}
+
 pub fn get(conn: &Connection, id: &str) -> Option<Item> {
-    conn.query_row(&format!("SELECT {COLUMNS} FROM items WHERE id=?1"), [id], item_from_row).optional().ok().flatten()
+    let mut item = conn.query_row(&format!("SELECT {COLUMNS} FROM items WHERE id=?1"), [id], item_from_row).optional().ok().flatten()?;
+    fill_marks(conn, std::slice::from_mut(&mut item));
+    Some(item)
+}
+
+/// Puts the title `id` on (or takes it off) one of the user's lists.
+pub fn set_mark(conn: &Connection, id: &str, list: &str, on: bool, now: i64) -> Result<()> {
+    if !LISTS.contains(&list) {
+        return Err(format!("There is no list called {list}"));
+    }
+    if on {
+        conn.execute(&format!("INSERT INTO marks(key,list,at) SELECT {MARK_KEY},?2,?3 FROM items WHERE id=?1 ON CONFLICT(key,list) DO UPDATE SET at=?3"), params![id, list, now]).map_err(db_err)?;
+    } else {
+        conn.execute(&format!("DELETE FROM marks WHERE list=?2 AND key=(SELECT {MARK_KEY} FROM items WHERE id=?1)"), params![id, list]).map_err(db_err)?;
+    }
+    Ok(())
+}
+
+/// The title each URL belongs to: a film's own video link, or a folder the URL is inside of (an
+/// episode). Used to tie the player's resume points back to the catalog.
+pub fn by_urls(conn: &Connection, urls: &[String]) -> Vec<(String, Item)> {
+    let mut out = Vec::new();
+    for url in urls {
+        let found = conn
+            .query_row(&format!("SELECT {COLUMNS} FROM items WHERE video_url=?1 OR (length(folder_url)>0 AND substr(?1,1,length(folder_url))=folder_url) ORDER BY length(folder_url) DESC LIMIT 1"), [url], item_from_row)
+            .optional()
+            .ok()
+            .flatten()
+            // a downloaded copy (the PC's `downloads` table; the phone has none, which just finds nothing)
+            .or_else(|| conn.query_row(&format!("SELECT {COLUMNS} FROM items WHERE {MARK_KEY}=(SELECT key FROM downloads WHERE path=?1) LIMIT 1"), [url], item_from_row).optional().ok().flatten());
+        if let Some(mut item) = found {
+            fill_marks(conn, std::slice::from_mut(&mut item));
+            out.push((url.clone(), item));
+        }
+    }
+    out
 }
 
 /// The stored poster path (even when its file has gone) and whether the folder was looked at.
@@ -271,6 +345,15 @@ fn where_clause(f: &Filter, with_year: bool, with_quality: bool) -> (String, Vec
     if f.played {
         parts.push("played>0".to_string());
     }
+    if let Some(list) = f.list.as_deref().filter(|l| LISTS.contains(l)) {
+        parts.push(format!("EXISTS (SELECT 1 FROM marks m WHERE m.list='{list}' AND m.key={MARK_KEY})"));
+    }
+    if f.hide_watched {
+        parts.push(format!("NOT EXISTS (SELECT 1 FROM marks m WHERE m.list='watched' AND m.key={MARK_KEY})"));
+    }
+    if let Some(tag) = f.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        add(&mut parts, &mut args, "(',' || tags || ',') LIKE ? ESCAPE '\\'", Value::Text(format!("%,{},%", tag.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))));
+    }
     (if parts.is_empty() { String::new() } else { format!(" WHERE {}", parts.join(" AND ")) }, args)
 }
 
@@ -284,6 +367,11 @@ pub fn query(conn: &Connection, f: &Filter) -> Result<(Vec<Item>, i64)> {
         Some("year") => "COALESCE(year,0) DESC, added DESC",
         Some("rank") => "COALESCE(rank,100000) ASC, added DESC",
         Some("played") => "played DESC",
+        Some("marked") => match f.list.as_deref().filter(|l| LISTS.contains(l)) {
+            Some("fav") => "(SELECT at FROM marks m WHERE m.list='fav' AND m.key=lower(title)||'|'||COALESCE(year,0)||'|'||kind) DESC",
+            Some("later") => "(SELECT at FROM marks m WHERE m.list='later' AND m.key=lower(title)||'|'||COALESCE(year,0)||'|'||kind) DESC",
+            _ => "(SELECT at FROM marks m WHERE m.list='watched' AND m.key=lower(title)||'|'||COALESCE(year,0)||'|'||kind) DESC",
+        },
         _ => "added DESC, title COLLATE NOCASE ASC",
     };
     let sql = format!(
@@ -294,7 +382,9 @@ pub fn query(conn: &Connection, f: &Filter) -> Result<(Vec<Item>, i64)> {
     );
     let mut stmt = conn.prepare(&sql).map_err(db_err)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), item_from_row).map_err(db_err)?;
-    Ok((rows.filter_map(|r| r.ok()).collect(), total))
+    let mut items: Vec<Item> = rows.filter_map(|r| r.ok()).collect();
+    fill_marks(conn, &mut items);
+    Ok((items, total))
 }
 
 /// Every folder of the same title as `id` (its 720p, 1080p, ... versions), the best quality first.
@@ -303,7 +393,9 @@ pub fn variants(conn: &Connection, id: &str) -> Result<Vec<Item>> {
     let sql = format!("SELECT {COLUMNS} FROM items WHERE lower(title)=lower(?1) AND COALESCE(year,0)=COALESCE(?2,0) AND kind=?3 AND section=?4 ORDER BY {QUALITY_RANK}, added DESC");
     let mut stmt = conn.prepare(&sql).map_err(db_err)?;
     let rows = stmt.query_map(params![item.title, item.year, item.kind, item.section], item_from_row).map_err(db_err)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let mut items: Vec<Item> = rows.filter_map(|r| r.ok()).collect();
+    fill_marks(conn, &mut items);
+    Ok(items)
 }
 
 /// The years and qualities a filter's titles have (ignoring the filter's own year and quality).
@@ -454,6 +546,57 @@ mod tests {
         assert_eq!((n, only[0].quality.as_str()), (1, "720p"));
         let all = variants(&c, &items[0].id).unwrap();
         assert_eq!(all.iter().map(|i| i.quality.as_str()).collect::<Vec<_>>(), vec!["1080p", "720p"]);
+    }
+
+    #[test]
+    fn marks_outlive_a_catalog_refresh_and_filter() {
+        let mut c = mem();
+        let mut nf = new("Anaconda", 2025, 30, "English");
+        nf.tags = vec!["Dual Audio".into(), "NF".into()];
+        let mut other = new("Zodiac", 2007, 5, "English");
+        other.tags = vec!["BluRay".into()];
+        upsert(&mut c, &[nf.clone(), other.clone(), new("Afterburn", 2025, 300, "English")], 1).unwrap();
+        let id = make_id(&nf.folder_url);
+        set_mark(&c, &id, "fav", true, 10).unwrap();
+        set_mark(&c, &make_id(&other.folder_url), "fav", true, 20).unwrap();
+        set_mark(&c, &id, "later", true, 11).unwrap();
+        set_mark(&c, &make_id(&other.folder_url), "watched", true, 12).unwrap();
+        assert!(set_mark(&c, &id, "bogus", true, 1).is_err());
+        let item = get(&c, &id).unwrap();
+        assert_eq!((item.fav, item.later, item.watched), (true, true, false));
+        let titles = |c: &Connection, f: Filter| query(c, &f).unwrap().0.into_iter().map(|i| i.title).collect::<Vec<_>>();
+        assert_eq!(titles(&c, Filter { list: Some("fav".into()), sort: Some("marked".into()), ..Default::default() }), vec!["Zodiac", "Anaconda"]);
+        assert_eq!(titles(&c, Filter { list: Some("later".into()), ..Default::default() }), vec!["Anaconda"]);
+        assert_eq!(titles(&c, Filter { hide_watched: true, sort: Some("az".into()), ..Default::default() }), vec!["Afterburn", "Anaconda"]);
+        assert_eq!(titles(&c, Filter { tag: Some("NF".into()), ..Default::default() }), vec!["Anaconda"]);
+        assert_eq!(titles(&c, Filter { tag: Some("Dual Audio".into()), ..Default::default() }), vec!["Afterburn", "Anaconda"], "Zodiac is BluRay only");
+        assert_eq!(titles(&c, Filter { tag: Some("N".into()), ..Default::default() }), Vec::<String>::new());
+        // the catalog is forgotten and read again, the title now in another category's folder
+        c.execute("DELETE FROM items", []).unwrap();
+        keep_categories(&c, &["http://h/Elsewhere/".to_string()]);
+        let mut moved = new("Anaconda", 2025, 400, "Elsewhere");
+        moved.quality = "720p".into();
+        upsert(&mut c, &[moved.clone()], 2).unwrap();
+        let again = get(&c, &make_id(&moved.folder_url)).unwrap();
+        assert_eq!((again.fav, again.later), (true, true), "the lists are about the title, not the folder");
+        // toggling off
+        set_mark(&c, &again.id, "later", false, 3).unwrap();
+        assert!(!get(&c, &again.id).unwrap().later);
+        assert!(get(&c, &again.id).unwrap().fav);
+    }
+
+    #[test]
+    fn resume_points_find_their_title() {
+        let mut c = mem();
+        let mut show = new("18 Again", 2020, 40, "Korean");
+        show.kind = "series".into();
+        let film = new("Anaconda", 2025, 30, "English");
+        upsert(&mut c, &[show.clone(), film.clone()], 1).unwrap();
+        set_resolved(&c, &make_id(&film.folder_url), &Resolved { video_url: "http://h/English/Anaconda/a.mkv".into(), ..Default::default() }).unwrap();
+        let found = by_urls(&c, &["http://h/English/Anaconda/a.mkv".to_string(), format!("{}S01/e1.mkv", show.folder_url), "http://elsewhere/x.mkv".to_string()]);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].1.title, "Anaconda");
+        assert_eq!(found[1].1.title, "18 Again");
     }
 
     #[test]

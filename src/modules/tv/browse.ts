@@ -3,6 +3,30 @@ import { icon } from "../../ui/icons";
 import { tvApi, type Filter, type Item, type Page } from "./api";
 import { card, notice, type TvCtx } from "./parts";
 
+/** The quality chips say 4K where the folders say 2160p. */
+export const qualityLabel = (q: string) => (q === "2160p" ? "4K" : q);
+
+/** Audio and source tags offered as chips (a title carries them in its folder name). */
+const TAGS = ["Dual Audio", "NF", "AMZN", "DSNP", "BluRay"];
+
+const HIDE_KEY = "zazabor.tv.hideWatched";
+export const hideWatchedSetting = {
+  get: () => {
+    try {
+      return localStorage.getItem(HIDE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  },
+  set: (on: boolean) => {
+    try {
+      localStorage.setItem(HIDE_KEY, on ? "1" : "0");
+    } catch {
+      // not remembered
+    }
+  },
+};
+
 export interface BrowseOptions {
   title: string;
   subtitle?: string;
@@ -14,6 +38,12 @@ export interface BrowseOptions {
   ranked?: boolean;
   /** Shown between the header and the filters (a row of the section's categories). */
   extra?: HTMLElement;
+  /** The sort to start with, when not the newest first. */
+  sortDefault?: NonNullable<Filter["sort"]>;
+  /** What an empty page says (glyph, title, text), instead of the catalog-is-filling-up line. */
+  emptyNotice?: [Parameters<typeof icon>[0], string, string];
+  /** Inside the Library page: no big title of its own. */
+  embedded?: boolean;
 }
 
 const PAGE = 60;
@@ -38,8 +68,9 @@ export class BrowsePage {
   private timer = 0;
 
   constructor(private ctx: TvCtx, private options: BrowseOptions) {
-    this.filter = { ...options.base, sort: options.ranked ? "rank" : "new" };
-    const head = h("header", { class: "tv-page-head" }, h("div", { class: "tv-page-title" }, h("h1", null, options.title), options.subtitle ? h("p", null, options.subtitle) : null, this.count));
+    this.filter = { ...options.base, sort: options.sortDefault ?? (options.ranked ? "rank" : "new") };
+    if (options.base.list !== "watched" && hideWatchedSetting.get()) this.filter.hideWatched = true;
+    const head = h("header", { class: `tv-page-head${options.embedded ? " embedded" : ""}` }, h("div", { class: "tv-page-title" }, options.embedded ? null : h("h1", null, options.title), options.subtitle ? h("p", null, options.subtitle) : null, this.count));
     if (options.search) {
       this.input = h("input", { class: "tv-search-input", type: "search", placeholder: "Search movies and series", "aria-label": "Search", spellcheck: false, autocomplete: "off" });
       this.input.addEventListener("input", () => {
@@ -48,6 +79,7 @@ export class BrowsePage {
           this.filter.q = this.input!.value.trim() || undefined;
           this.filter.year = undefined;
           this.filter.quality = undefined;
+          this.filter.tag = undefined;
           void this.load();
         }, 120);
       });
@@ -71,8 +103,9 @@ export class BrowsePage {
   }
 
   private drawSort() {
-    const modes: [NonNullable<Filter["sort"]>, string][] = [["new", "Newest"], ["az", "A–Z"], ["year", "Year"]];
+    const modes: [NonNullable<Filter["sort"]>, string][] = [["new", "Newest added"], ["year", "Year"], ["az", "A–Z"]];
     if (this.options.ranked) modes.unshift(["rank", "Rank"]);
+    if (this.options.base.list) modes.unshift(["marked", "Date added to list"]);
     this.sortBar.replaceChildren(...modes.map(([id, label]) => {
       const b = h("button", { class: `tv-seg-btn${this.filter.sort === id ? " on" : ""}`, type: "button", role: "radio", "aria-checked": String(this.filter.sort === id) }, label);
       b.addEventListener("click", () => {
@@ -94,7 +127,17 @@ export class BrowsePage {
     for (const [year] of this.years.slice(0, 18)) out.push(chip(String(year), this.filter.year === year, () => this.set({ year })));
     if (this.qualities.length > 1) {
       out.push(h("span", { class: "tv-chip-gap" }));
-      for (const [quality] of this.qualities.slice(0, 4)) out.push(chip(quality, this.filter.quality === quality, () => this.set({ quality: this.filter.quality === quality ? undefined : quality })));
+      for (const [quality] of this.qualities.slice(0, 4)) out.push(chip(qualityLabel(quality), this.filter.quality === quality, () => this.set({ quality: this.filter.quality === quality ? undefined : quality })));
+    }
+    out.push(h("span", { class: "tv-chip-gap" }));
+    for (const tag of TAGS) out.push(chip(tag, this.filter.tag === tag, () => this.set({ tag: this.filter.tag === tag ? undefined : tag })));
+    if (this.options.base.list !== "watched") {
+      out.push(h("span", { class: "tv-chip-gap" }));
+      out.push(chip("Hide watched", this.filter.hideWatched === true, () => {
+        const on = !this.filter.hideWatched;
+        hideWatchedSetting.set(on);
+        this.set({ hideWatched: on || undefined });
+      }));
     }
     this.chips.replaceChildren(...out);
   }
@@ -127,8 +170,12 @@ export class BrowsePage {
     this.items = [];
     this.total = page.total;
     this.append(page.items);
-    this.count.textContent = `${page.total.toLocaleString()} ${page.total === 1 ? "title" : "titles"}`;
-    if (!page.items.length) this.grid.append(notice("search", this.filter.q ? "No matches" : "Nothing here yet", this.filter.q ? `Nothing in the catalog is called “${this.filter.q}”.` : "The catalog is still filling up, or this category has no titles."));
+    const narrowed = !!(this.filter.year || this.filter.quality || this.filter.tag || this.filter.hideWatched || this.filter.q);
+    this.count.textContent = `${page.total.toLocaleString()} ${page.total === 1 ? "title" : "titles"}${narrowed ? " match" : ""}`;
+    if (!page.items.length) {
+      const [glyph, title, text] = this.options.emptyNotice && !narrowed ? this.options.emptyNotice : ["search" as const, this.filter.q ? "No matches" : narrowed ? "No titles match these filters" : "Nothing here yet", this.filter.q ? `Nothing in the catalog is called “${this.filter.q}”.` : narrowed ? "Try removing a filter." : "The catalog is still filling up, or this category has no titles."];
+      this.grid.append(notice(glyph, title, text));
+    }
   }
 
   private append(items: Item[]) {
