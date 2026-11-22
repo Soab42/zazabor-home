@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -57,20 +57,39 @@ const PLAYER_OPTIONS: [&str; 9] = [
     ":avcodec-skiploopfilter=0",
 ];
 
-/// When this PC last asked a phone to mirror (Phone Link's Mirror button). That phone's hello is
-/// answered at once: the user is waiting for the picture, and waiting for the player first could
-/// stall both sides (the player had nothing to play until the phone streamed, and the phone
-/// streamed only once answered; a quick restart hung on the spinner).
-static PC_ASKED: Mutex<Option<Instant>> = Mutex::new(None);
-const PC_ASKED_FOR: Duration = Duration::from_secs(90);
+/// The phone this PC just asked to mirror (Phone Link's Mirror button), by the address its
+/// encrypted link comes from, and when. That phone's hello is answered at once: the user is waiting
+/// for the picture, and waiting for the player first could stall both sides (the player had
+/// nothing to play until the phone streamed, and the phone streamed only once answered; a quick
+/// restart hung on the spinner). Any other connection, or one after the window, waits for the
+/// page's yes as before; the pass is used up by the first matching connection.
+static PC_ASKED: Mutex<Option<(IpAddr, Instant)>> = Mutex::new(None);
+const PC_ASKED_FOR: Duration = Duration::from_secs(30);
 
-/// Phone Link asked a phone to mirror here: its connection needs no wait for the player.
-pub fn expect_phone() {
-    *lock(&PC_ASKED) = Some(Instant::now());
+/// Phone Link asked the phone at `ip` to mirror here.
+pub fn expect_phone(ip: IpAddr) {
+    *lock(&PC_ASKED) = Some((ip, Instant::now()));
 }
 
-fn pc_asked() -> bool {
-    lock(&PC_ASKED).take().is_some_and(|at| at.elapsed() < PC_ASKED_FOR)
+/// True (once) when `peer` is the phone just asked to mirror.
+fn pc_asked(peer: Option<IpAddr>) -> bool {
+    let mut slot = lock(&PC_ASKED);
+    match (*slot, peer) {
+        (Some((ip, at)), Some(peer)) if same_ip(ip, peer) && at.elapsed() < PC_ASKED_FOR => {
+            *slot = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// IPv4 and its IPv6-mapped form count as one address.
+fn same_ip(a: IpAddr, b: IpAddr) -> bool {
+    let plain = |ip: IpAddr| match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    };
+    plain(a) == plain(b)
 }
 
 /// Listens for phones; returns the TCP port.
@@ -141,7 +160,8 @@ const FLAG_KEY: u8 = 1;
 const FLAG_CONFIG: u8 = 2;
 
 fn serve_phone(stream: TcpStream, generation: u64, player_port: u16) {
-    let peer = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let peer_ip = stream.peer_addr().ok().map(|a| a.ip());
+    let peer = peer_ip.map(|ip| ip.to_string()).unwrap_or_default();
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(HELLO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
@@ -177,7 +197,7 @@ fn serve_phone(stream: TcpStream, generation: u64, player_port: u16) {
     );
     // A mirror this PC asked for streams straight away (the player joins at the next key frame);
     // one the phone started waits for the page's yes.
-    if !pc_asked() {
+    if !pc_asked(peer_ip) {
         if let Err(reason) = wait_for_answer(session, generation, &phone) {
             answer(&mut phone, Err(&reason));
             super::stop(session);
@@ -979,6 +999,17 @@ fn crc32_mpeg(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_asked_phone_skips_the_wait_and_only_once() {
+        let phone: IpAddr = "192.168.0.108".parse().unwrap();
+        let other: IpAddr = "192.168.0.50".parse().unwrap();
+        expect_phone(phone);
+        assert!(!pc_asked(Some(other)), "another device on the network");
+        assert!(!pc_asked(None));
+        assert!(pc_asked(Some("::ffff:192.168.0.108".parse().unwrap())), "the phone, over IPv6-mapped");
+        assert!(!pc_asked(Some(phone)), "the pass is used up");
+    }
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::OnceLock;

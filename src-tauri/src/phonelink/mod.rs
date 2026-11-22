@@ -792,7 +792,12 @@ impl Hub {
         if let Some(port) = port.filter(|p| *p != 0) {
             msg["port"] = port.into();
         }
-        self.need(phone_id)?.request(msg, self.timing.listing)?;
+        let link = self.need(phone_id)?;
+        link.request(msg, self.timing.listing)?;
+        // Only this phone's mirror connection, from the address its link comes from, skips the wait.
+        if let Some(ip) = link.peer_ip() {
+            crate::cast::mirror::expect_phone(ip);
+        }
         Ok(())
     }
 
@@ -1293,7 +1298,6 @@ pub async fn phone_ring(phone_id: String) -> Result<(), String> {
 pub async fn phone_mirror(phone_id: String) -> Result<(), String> {
     // The Cast receiver's screen-mirroring port, when it's running.
     let port = crate::cast::cast_receiver_info().services.into_iter().find(|s| s.id == "mirror" && s.error.is_none()).map(|s| s.port);
-    crate::cast::mirror::expect_phone();
     blocking(move |h| h.mirror(&phone_id, port)).await
 }
 

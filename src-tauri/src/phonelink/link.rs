@@ -271,6 +271,11 @@ pub struct Link {
 }
 
 impl Link {
+    /// The phone's address on the network, as its encrypted link connection comes from.
+    pub fn peer_ip(&self) -> Option<std::net::IpAddr> {
+        self.stream.peer_addr().ok().map(|a| a.ip())
+    }
+
     fn new(phone_id: String, stream: TcpStream, cipher: Cipher) -> Link {
         Link {
             phone_id,
