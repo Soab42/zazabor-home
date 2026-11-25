@@ -379,6 +379,8 @@ export interface RemoteInternetStatus {
   service: string;
   meetHost: string;
   hasToken: boolean;
+  /** Why it isn't running although it's switched on. */
+  problem: string | null;
 }
 
 /** One thing the mirror window asks the phone to do (positions are fractions of its screen). */

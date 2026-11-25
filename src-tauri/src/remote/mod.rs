@@ -60,9 +60,20 @@ pub fn init(app: AppHandle, data_dir: std::path::PathBuf) {
     store::init(data_dir.join("remote.json"));
     ui::init(app.clone());
     let _ = APP.set(app);
-    if let Err(e) = anywhere::apply() {
-        eprintln!("Remote (internet): {e}");
-    }
+    // At login the keyring (Meet's tunnel token) may not be unlocked yet: keep trying for ten
+    // minutes, quietly, while the internet path is switched on.
+    let _ = std::thread::Builder::new().name("remote-anywhere-start".into()).spawn(|| {
+        for _ in 0..30 {
+            match anywhere::apply() {
+                Ok(()) => return,
+                Err(e) => eprintln!("Remote (internet): {e}"),
+            }
+            std::thread::sleep(Duration::from_secs(20));
+            if !store::get().internet {
+                return;
+            }
+        }
+    });
 }
 
 /// Settings' page refreshes (the internet path's tunnel changed state).

@@ -46,6 +46,8 @@ const MAX_PIPES: usize = 16;
 static SERVER: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 /// The hostname the running tunnel serves, so saving another setting doesn't restart it.
 static SERVING: Mutex<Option<String>> = Mutex::new(None);
+/// Why the internet path isn't running although it's switched on, for Settings.
+static PROBLEM: Mutex<Option<String>> = Mutex::new(None);
 static TUNNEL: OnceLock<Arc<Tunnel>> = OnceLock::new();
 /// The local ends of the bridge's connections to the link listener, as the listener sees them.
 static BRIDGED: Mutex<Option<HashSet<SocketAddr>>> = Mutex::new(None);
@@ -128,6 +130,8 @@ pub struct Status {
     pub meet_host: String,
     /// Whether Meet has the named tunnel's token (this path needs it).
     pub has_token: bool,
+    /// Why it isn't running although it's switched on.
+    pub problem: Option<String>,
 }
 
 pub fn status() -> Status {
@@ -139,11 +143,19 @@ pub fn status() -> Status {
         service: format!("http://localhost:{PORT}"),
         meet_host: crate::meet::own_hostname().unwrap_or_default(),
         has_token: named.is_some(),
+        problem: lock(&PROBLEM).clone(),
     }
 }
 
 /// Brings the server and the tunnel in line with the settings (on start, and after each change).
 pub fn apply() -> Result<()> {
+    let result = apply_inner();
+    *lock(&PROBLEM) = result.as_ref().err().cloned();
+    super::emit_changed();
+    result
+}
+
+fn apply_inner() -> Result<()> {
     let s = store::get();
     if !(s.enabled && s.internet) || s.internet_host.is_empty() {
         stop();

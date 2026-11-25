@@ -518,3 +518,49 @@ fn the_camera_pipeline_uses_the_cameras_mode() {
     assert!(description(&Params { source: Source::Camera { path: "/dev/video4".into(), mode: None }, ..p.clone() }).starts_with("v4l2src device=\"/dev/video4\" ! decodebin ! queue"));
     assert!(description(&Params { source: Source::Camera { path: "test".into(), mode: None }, ..p }).starts_with("videotestsrc is-live=true"));
 }
+
+/// The real webcam and the real sound (`ZREM_TEST_DEVICES=1`): pictures and Opus packets come,
+/// and once the capture is dropped the camera is let go of within two seconds.
+#[test]
+#[ignore = "opens the webcam and the PC's sound: ZREM_TEST_DEVICES=1 cargo test … real_camera_and_sound -- --ignored"]
+fn real_camera_and_sound() {
+    if std::env::var_os("ZREM_TEST_DEVICES").is_none() {
+        return;
+    }
+    let cams = super::cameras();
+    eprintln!("cameras: {:?}", cams.iter().map(|c| (&c.path, &c.name, c.mode)).collect::<Vec<_>>());
+    let cam = cams.first().expect("a camera");
+    let p = Params { source: Source::Camera { path: cam.path.clone(), mode: cam.mode }, size: (960, 540), fps: 30, kbps: 2000, encoder: Encoder::X264 };
+    let c = super::capture::Capture::start(&p).unwrap();
+    let mut pictures = 0;
+    let end = std::time::Instant::now() + Duration::from_secs(4);
+    while pictures < 10 && std::time::Instant::now() < end {
+        if c.pull(200).unwrap().is_some() {
+            pictures += 1;
+        }
+    }
+    eprintln!("camera pictures: {pictures}");
+    drop(c);
+    let open = |dev: &str| std::fs::read_dir("/proc/self/fd").unwrap().flatten().any(|e| std::fs::read_link(e.path()).is_ok_and(|t| t.to_string_lossy() == dev));
+    let mut released = false;
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(100));
+        if !open(&cam.path) {
+            released = true;
+            break;
+        }
+    }
+    eprintln!("camera released: {released}");
+
+    let a = super::audio::Capture::start(super::audio::Audio::Sound, 64).unwrap();
+    let mut packets = 0;
+    let end = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < end {
+        if a.pull(100).unwrap().is_some() {
+            packets += 1;
+        }
+    }
+    eprintln!("sound packets in 2 s: {packets}");
+    drop(a);
+    assert!(pictures >= 10 && released && packets > 50, "pictures {pictures}, released {released}, packets {packets}");
+}

@@ -208,7 +208,7 @@ export function phoneCategory(host: { readonly config: Config; configChanged(): 
       ? "Needs Meet's “My own domain” tunnel token first (Settings → Meet)."
       : "Texts, notifications, files and Remote work away from home, over mobile data or any Wi-Fi.";
     const t = internet?.tunnel;
-    tunnelState.textContent = !remote.internet || !t ? "" : t.state === "on" ? `Tunnel connected. Phones dial ${remote.internetHost}.` : t.state === "starting" ? "Tunnel starting…" : t.state === "error" ? `Tunnel problem: ${t.error ?? "unknown"}` : "Tunnel off.";
+    tunnelState.textContent = !remote.internet || !t ? "" : internet?.problem ? `Not running: ${internet.problem}` : t.state === "on" ? `Tunnel connected. Phones dial ${remote.internetHost}.` : t.state === "starting" ? "Tunnel starting…" : t.state === "error" ? `Tunnel problem: ${t.error ?? "unknown"}` : "Tunnel off.";
   }
 
   const alwaysBox = h("div", { class: "pl-settings-phones" });
