@@ -546,3 +546,137 @@ fn a_forgotten_phone_is_told_and_no_pairing_starts() {
     assert!(lock(&events).iter().all(|(e, _)| e != "phone-pair"));
     assert!(hub.state().pairing.is_none());
 }
+
+/// A WebSocket client over the internet bridge (`remote::anywhere`), as Zazabor Link's `WsSocket`
+/// is: writes go out as one masked message per flush, and messages read back as one stream.
+struct WsPhone {
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+    pending: Vec<u8>,
+    inbox: std::collections::VecDeque<u8>,
+}
+
+impl WsPhone {
+    fn dial(bridge_port: u16) -> WsPhone {
+        use std::io::BufRead;
+        let mut stream = TcpStream::connect(("127.0.0.1", bridge_port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.write_all(b"GET /ws/link HTTP/1.1\r\nHost: link.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nCF-Connecting-IP: 198.51.100.7\r\n\r\n").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+        WsPhone { stream, reader, pending: Vec::new(), inbox: Default::default() }
+    }
+}
+
+impl Write for WsPhone {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if !self.pending.is_empty() {
+            let data = std::mem::take(&mut self.pending);
+            crate::remote::anywhere::write_frame(&mut self.stream, crate::remote::anywhere::OP_BINARY, &data, Some([3, 1, 4, 1])).map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Read for WsPhone {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::BufRead;
+        let n = {
+            let have = self.fill_buf()?;
+            let n = buf.len().min(have.len());
+            buf[..n].copy_from_slice(&have[..n]);
+            n
+        };
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl std::io::BufRead for WsPhone {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        while self.inbox.is_empty() {
+            let f = crate::remote::anywhere::read_frame(&mut self.reader, 1 << 22).map_err(std::io::Error::other)?;
+            if f.op == crate::remote::anywhere::OP_CLOSE {
+                return Ok(&[]);
+            }
+            self.inbox.extend(f.payload);
+        }
+        Ok(self.inbox.make_contiguous())
+    }
+    fn consume(&mut self, amt: usize) {
+        self.inbox.drain(..amt.min(self.inbox.len()));
+    }
+}
+
+/// Over the internet only a phone that is already paired gets in: a pairing is refused before
+/// any code shows, and a paired phone's link is marked as coming over the internet.
+#[test]
+fn over_the_internet_a_paired_phone_links_and_nobody_pairs() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let host = TestHost { events: events.clone(), desktop: Arc::default(), dir: std::env::temp_dir() };
+    let hub = Hub::new(Box::new(host), Connection::open_in_memory().unwrap(), Timing::default()).unwrap();
+    let port = hub.start("127.0.0.1", 0).unwrap();
+    let key = pair_new_phone(&hub, port, &events);
+    lock(&events).clear();
+
+    let bridge = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bridge_port = bridge.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in bridge.incoming().flatten() {
+            std::thread::spawn(move || {
+                let _ = crate::remote::anywhere::handle(s, Some(port));
+            });
+        }
+    });
+
+    // A pairing over the internet: refused, and nothing shows on the PC.
+    let mut ws = WsPhone::dial(bridge_port);
+    ws.write_all(b"ZLNK/1\n").unwrap();
+    ws.write_all(format!("{}\n", json!({"phoneId": "00".repeat(16), "name": "Stranger", "model": "X", "nonce": link::base64(&[7u8; 16]), "pair": true, "commit": link::base64(&[1u8; 32])})).as_bytes()).unwrap();
+    ws.flush().unwrap();
+    let line = link::read_line(&mut ws).unwrap();
+    let answer: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(answer["reason"].as_str().unwrap().contains("same Wi-Fi"), "{answer}");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(hub.state().pairing.is_none() && !lock(&events).iter().any(|(e, _)| e == "phone-pair"));
+
+    // The paired phone: the same handshake as on Wi-Fi, through the WebSocket.
+    let mut ws = WsPhone::dial(bridge_port);
+    let phone_nonce = [0x22u8; 16];
+    ws.write_all(b"ZLNK/1\n").unwrap();
+    ws.write_all(format!("{}\n", json!({"phoneId": PHONE_ID, "name": "Pixel 7", "model": "Google Pixel 7", "nonce": link::base64(&phone_nonce), "pair": false})).as_bytes()).unwrap();
+    ws.flush().unwrap();
+    let answer: Value = serde_json::from_str(&link::read_line(&mut ws).unwrap()).unwrap();
+    assert_eq!(answer["ok"], true, "{answer}");
+    let pc_nonce = link::unbase64(answer["nonce"].as_str().unwrap()).unwrap();
+    let (up, down) = link::session_keys(&key, &phone_nonce, &pc_nonce);
+    let (mut tx, mut rx) = (Cipher::new(&up), Cipher::new(&down));
+    link::write_frame(&mut ws, &mut tx, &hello_frame()).unwrap();
+    wait_for("the phone to connect over the internet", || hub.is_connected(PHONE_ID).then_some(()));
+    assert!(hub.link(PHONE_ID).unwrap().via_internet);
+    assert!(hub.state().phones[0].internet);
+    // Sealed frames come back through the bridge (the refresh's first request).
+    match link::read_frame(&mut ws, &mut rx).unwrap() {
+        Frame::Json(v) => assert!(v["t"].is_string(), "{v}"),
+        other => panic!("{other:?}"),
+    }
+    let _ = ws.stream.shutdown(std::net::Shutdown::Both);
+    wait_for("the phone to go", || (!hub.is_connected(PHONE_ID)).then_some(()));
+
+    // The same phone on Wi-Fi isn't marked.
+    let _phone = connect_known(port, &key);
+    wait_for("the phone to connect on Wi-Fi", || hub.is_connected(PHONE_ID).then_some(()));
+    assert!(!hub.link(PHONE_ID).unwrap().via_internet);
+    hub.stop();
+}

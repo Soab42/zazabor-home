@@ -41,6 +41,13 @@ pub struct UiState {
     pub mode: &'static str,
     pub phone: String,
     pub view_only: bool,
+    /// What the question asks for: "control" (the screen) or "camera".
+    pub purpose: &'static str,
+    /// The phone is on the internet path, not this network.
+    pub internet: bool,
+    /// The phone sees the PC's camera / hears its microphone right now.
+    pub camera: bool,
+    pub mic: bool,
 }
 
 struct Inner {
@@ -48,7 +55,7 @@ struct Inner {
     answer: Option<mpsc::Sender<Choice>>,
 }
 
-static INNER: Mutex<Inner> = Mutex::new(Inner { state: UiState { mode: "idle", phone: String::new(), view_only: false }, answer: None });
+static INNER: Mutex<Inner> = Mutex::new(Inner { state: UiState { mode: "idle", phone: String::new(), view_only: false, purpose: "", internet: false, camera: false, mic: false }, answer: None });
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
 fn inner() -> MutexGuard<'static, Inner> {
@@ -64,12 +71,12 @@ pub fn is_ui(label: &str) -> bool {
 }
 
 /// Shows the question and waits for the answer (no answer in a minute is a no).
-pub fn ask(phone: &str) -> Choice {
+pub fn ask(phone: &str, purpose: &'static str) -> Choice {
     let (tx, rx) = mpsc::channel();
     {
         let mut i = inner();
         i.answer = Some(tx);
-        i.state = UiState { mode: "ask", phone: phone.to_string(), view_only: false };
+        i.state = UiState { mode: "ask", phone: phone.to_string(), purpose, ..UiState::default() };
     }
     show();
     let choice = rx.recv_timeout(ASK_TIMEOUT).unwrap_or(Choice::Deny);
@@ -81,8 +88,21 @@ pub fn ask(phone: &str) -> Choice {
 }
 
 /// The pill for a running session.
-pub fn live(phone: &str, view_only: bool) {
-    inner().state = UiState { mode: "live", phone: phone.to_string(), view_only };
+pub fn live(phone: &str, view_only: bool, internet: bool) {
+    inner().state = UiState { mode: "live", phone: phone.to_string(), view_only, internet, ..UiState::default() };
+    show();
+}
+
+/// The camera or the microphone went on or off: the pill says so (it can't be hidden).
+pub fn media(camera: bool, mic: bool) {
+    {
+        let mut i = inner();
+        if i.state.mode != "live" || (i.state.camera == camera && i.state.mic == mic) {
+            return;
+        }
+        i.state.camera = camera;
+        i.state.mic = mic;
+    }
     show();
 }
 
@@ -110,7 +130,9 @@ pub fn answer(choice: Choice) {
 fn show() {
     let Some(app) = APP.get() else { return };
     let state = state();
-    let (w, h) = if state.mode == "ask" { ASK_WINDOW } else { LIVE_WINDOW };
+    // The badge grows by an icon for the camera, the microphone and the internet.
+    let extra = [state.camera, state.mic, state.internet].iter().filter(|b| **b).count() as f64 * 28.0;
+    let (w, h) = if state.mode == "ask" { ASK_WINDOW } else { (LIVE_WINDOW.0 + extra, LIVE_WINDOW.1) };
     let monitors = app.available_monitors().unwrap_or_default();
     let count = monitors.len().max(1);
     for i in 0..count {

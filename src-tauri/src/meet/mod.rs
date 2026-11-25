@@ -799,6 +799,24 @@ fn full_name_or(fallback: &str) -> String {
 
 static HUB: OnceLock<Arc<Hub>> = OnceLock::new();
 
+/// The named tunnel's token and the folder cloudflared lives in, when “My own domain” has a
+/// token. Remote's internet path (`link.<domain>`, docs/plans/remote.md) runs its own connector
+/// of the same tunnel.
+pub fn named_tunnel() -> Option<(String, PathBuf)> {
+    let hub = HUB.get()?;
+    let (_, _, has_token) = hub.domain_settings();
+    if !has_token {
+        return None;
+    }
+    Some((secret::get(&hub.data_dir)?, hub.data_dir.clone()))
+}
+
+/// Meet's own hostname (meet.example.com), when one is saved.
+pub fn own_hostname() -> Option<String> {
+    let (_, host, _) = HUB.get()?.domain_settings();
+    (!host.is_empty()).then_some(host)
+}
+
 struct AppHost(AppHandle);
 
 impl Host for AppHost {

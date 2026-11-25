@@ -16,11 +16,19 @@ pub struct Settings {
     pub view_only: bool,
     /// "x264" (constant bitrate) or "vaapi" (graphics chip, constant quality).
     pub encoder: String,
+    /// Phones may reach this PC from any network through `internet_host` (docs/plans/remote.md
+    /// "Any network").
+    pub internet: bool,
+    /// The public hostname on Meet's named tunnel, like link.example.com.
+    pub internet_host: String,
+    /// Phones may see this PC's camera and hear its microphone (the PC's own sound is part of
+    /// every session).
+    pub media: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { enabled: false, always: Vec::new(), view_only: false, encoder: "x264".into() }
+        Settings { enabled: false, always: Vec::new(), view_only: false, encoder: "x264".into(), internet: false, internet_host: String::new(), media: false }
     }
 }
 
@@ -30,6 +38,10 @@ impl Settings {
             self.encoder = "x264".into();
         }
         self.always.retain(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+        self.internet_host = crate::meet::clean_hostname(&self.internet_host).unwrap_or_default();
+        if self.internet_host.is_empty() {
+            self.internet = false;
+        }
         self.always.sort();
         self.always.dedup();
         self

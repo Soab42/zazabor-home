@@ -41,5 +41,6 @@ body.remote-window, body.remote-window #app { height: 100vh; min-height: 0; disp
 }
 .rc-badge { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; color: #fff; }
 .rc-badge .rc-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; }
+.rc-badge.rc-extra { width: 22px; }
 .rc-mini .rc-stop { width: 34px; height: 34px; padding: 0; justify-content: center; border-radius: 50%; }
 @media (prefers-reduced-motion: reduce) { .rc-card, .rc-dot { animation: none; } }

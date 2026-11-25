@@ -23,6 +23,8 @@ const TAG_LEN: usize = 16;
 /// Frame kinds (the first plaintext byte).
 pub const K_JSON: u8 = 1;
 pub const K_VIDEO: u8 = 0x10;
+/// The PC's sound: `11 ‖ flags (0) ‖ pts µs (8, BE) ‖ one Opus packet`.
+pub const K_AUDIO: u8 = 0x11;
 pub const K_INPUT: u8 = 0x20;
 
 /// Video frame flags.
@@ -80,6 +82,16 @@ pub fn video_frame(key: bool, pts_us: u64, data: &[u8]) -> Vec<u8> {
     out.push(if key { F_KEY } else { 0 });
     out.extend_from_slice(&pts_us.to_be_bytes());
     out.extend_from_slice(data);
+    out
+}
+
+/// An audio packet's plaintext.
+pub fn audio_frame(pts_us: u64, packet: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(10 + packet.len());
+    out.push(K_AUDIO);
+    out.push(0);
+    out.extend_from_slice(&pts_us.to_be_bytes());
+    out.extend_from_slice(packet);
     out
 }
 

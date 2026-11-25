@@ -99,6 +99,8 @@ pub struct Phone {
     /// What the phone calls itself (its Bluetooth name).
     pub device_name: String,
     pub connected: bool,
+    /// Connected through the internet path (`remote::anywhere`), not the local network.
+    pub internet: bool,
     pub last_seen: i64,
     pub battery: Option<i64>,
     pub charging: bool,
@@ -315,6 +317,11 @@ impl Hub {
 
     // ---- connections (called by the link)
 
+    /// Every phone connected now.
+    pub fn links(&self) -> Vec<Arc<Link>> {
+        lock(&self.links).values().cloned().collect()
+    }
+
     pub fn link(&self, phone_id: &str) -> Option<Arc<Link>> {
         lock(&self.links).get(phone_id).filter(|l| !l.is_closed()).cloned()
     }
@@ -341,6 +348,10 @@ impl Hub {
         }
         lock(&self.live).entry(id.clone()).or_default();
         self.emit_changed();
+        // Where to find this PC away from home (only said while that path is on).
+        if crate::remote::anywhere::link_url().is_some() {
+            crate::remote::anywhere::tell(link);
+        }
         // Fill the cache from the phone, off the reader thread.
         let hub = self.clone();
         std::thread::spawn(move || hub.refresh(&id, &caps));
@@ -540,6 +551,7 @@ impl Hub {
                 let unread_sms = self.with_db(|c| store::unread(c, &p.phone_id)).unwrap_or(0);
                 Phone {
                     connected,
+                    internet: connected && self.link(&p.phone_id).is_some_and(|l| l.via_internet),
                     last_seen: if connected { crate::notes::now() } else { p.last_seen },
                     battery: status.get("battery").and_then(Value::as_i64),
                     charging: status.get("charging").and_then(Value::as_bool).unwrap_or(false),
@@ -793,6 +805,9 @@ impl Hub {
             msg["port"] = port.into();
         }
         let link = self.need(phone_id)?;
+        if link.via_internet {
+            return Err("Mirroring needs the phone on the same network as this PC for now.".into());
+        }
         link.request(msg, self.timing.listing)?;
         // Only this phone's mirror connection, from the address its link comes from, skips the wait.
         if let Some(ip) = link.peer_ip() {

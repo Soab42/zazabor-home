@@ -137,6 +137,7 @@ Phone (Kotlin, `mobile-cast/`, Zazabor Link):
    - consent prompts, indicators and kill switches on both sides
    - LAN
 2. **Any network:** `link.<domain>` WebSocket path, end-to-end sealed, for Phone Link and Remote.
+   Built 2026-11-25 with the camera and the PC's sound (see "Any network, camera and sound").
 3. **Media, Presenter, Power, monitor picker, adaptive bitrate, quality settings.**
 4. **Later:** gamepad (uinput rule), Wayland (portal), and a relay for users without their own domain.
 
@@ -199,6 +200,81 @@ Android emulator against the real app on a nested display.
   PC's LAN address.
 - The phone's Link needs the PC's public address while paired (sealed message), and a fallback order
   LAN → WSS.
+
+## Any network, camera and sound (built 2026-11-25)
+
+The user asked on 2026-11-25: "implement any network pc control, web cam and audio acces from
+mobile", and chose "the phone sees and hears the PC" (not the phone as the PC's webcam).
+
+**What the user gets:**
+
+- Phone Link and Remote work away from home: Zazabor Link tries the PC on Wi-Fi first (mDNS or the
+  saved address), and when that fails, or there is no Wi-Fi, it dials `wss://link.<domain>/ws/link`.
+- The Remote screen has a **Camera** tab (the PC's webcam, pinch to zoom, more than one camera →
+  a picker) and a **sound button** in its top bar: Sound off → PC sound (what the speakers play)
+  → PC mic.
+- Over the internet the Remote screen starts at 720p and 2 Mbps, and the bitrate follows the
+  ping (below).
+
+**PC (`src-tauri/src/remote/anywhere.rs`):**
+
+- An HTTP server on `127.0.0.1:47214` (loopback only). `/health` answers `{"app":"zazabor-link",
+  "nonce"}` for Settings' Test. `/ws/link` and `/ws/remote/<port>` are WebSockets that the server
+  turns into **plain byte pipes** to this PC's own listeners (the ZLNK listener, or a remote
+  session's one-shot port while it waits for its phone). The pipe never reads what it carries: ZLNK
+  and ZREM run unchanged inside, sealed end to end with the phone's link key.
+- `cloudflared tunnel run` with Meet's named-tunnel token (a second connector of the same tunnel;
+  both connectors run on this PC, so either one serves both hostnames). The user adds a second
+  public hostname in the dashboard: `link.<domain>` → `http://localhost:47214`.
+- The pipe marks its connection to the link listener (`is_bridged`, by the local address, before the
+  first byte goes through). The link then **refuses to pair** over the internet ("Pair on the same
+  Wi-Fi first") and marks the `Link` as `via_internet`. A remote session from such a link binds its
+  one-shot port to 127.0.0.1, lets the bridge reach it until the dial, and answers `remote.start`
+  with `wss`.
+- 30 WebSocket connections per client address (`Cf-Connecting-Ip`) per 10 minutes, at most 16
+  pipes at once.
+- While the internet path is on, the PC tells each phone that connects `{"t":"net","wss":…}` (and
+  an empty address to every connected phone when it is turned off).
+- Mirroring the phone on the PC (ZMIR) still needs the same network: `mirror.start` over an
+  internet link is refused with a plain message.
+
+**ZREM additions** (wire format in docs/plans/phone-link.md §1b stays; these are new):
+
+- PC → phone `11 ‖ flags(0) ‖ pts µs (8) ‖ Opus packet`: the PC's sound, 48 kHz stereo, 20 ms
+  packets, 64 kbps (`audio.rs`: `pulsesrc @DEFAULT_MONITOR@` or `@DEFAULT_SOURCE@` → `opusenc`).
+- Phone → PC `{"t":"audio","src":"off"|"sound"|"mic"}`; the PC answers
+  `{"t":"audio","src","codec":"opus","rate","channels","preSkip"}` (the phone builds its OpusHead
+  csd from it).
+- Phone → PC `{"t":"source","src":"screen"|"camera","i"}`: the picture switches source (the same
+  H.264 pipeline with `v4l2src` in the recorder's camera mode). A camera that won't open sends a
+  `notice` and goes back to the screen. Input events are ignored while the camera shows.
+- `info` gains `source`, `camera`, `cameras` and `media`; `notice` (`{"t":"notice","text"}`) is a
+  message for a toast.
+- `remote.start` may carry `"source":"camera"`; the PC's question then says "wants to see this PC's
+  camera".
+
+**Rules:** the camera and the microphone need their own setting ("Let them see the camera and hear
+the microphone", off by default); the PC's own sound doesn't. While either is on, the corner badge
+shows a camera or microphone icon (and a globe for the internet), on every monitor, and it can't be
+hidden. Away from home nobody can answer the PC's question, so the phone must be "always allowed"
+first (the question times out otherwise).
+
+**Phone (Zazabor Link 0.6.0):** `WsSocket` (a WebSocket that is a `Socket`, so `Link.handshake`,
+`Session` and `RemoteClient` run unchanged; TLS with the hostname checked), the LAN → internet
+fallback in `LinkService` (and back to Wi-Fi when the PC answers there: a 2-second probe when Wi-Fi
+comes up), `RemoteAudio` (MediaCodec Opus → a low-latency AudioTrack; more than 250 ms queued is
+dropped), and the Camera tab and sound button in `RemoteActivity`.
+
+**Adaptive bitrate (internet only):** the phone pings every second. A ping 250 ms over the best one
+seen cuts the bitrate by 30 % (`bitrate`, min 400 kbps); five seconds within 80 ms of the best
+raise it by 15 %, up to the quality chip's rate.
+
+**Tested** (2026-11-25): Rust unit tests (WebSocket frames, the request reader and router, the rate
+limit, the audio and camera pipelines) and an end-to-end test with the real bridge in front of the
+real link listener (a pairing over the internet is refused before any code shows; a paired phone
+links, is marked, and gets sealed frames back). JVM tests for `WsSocket` (handshake, a stream split
+over messages, ping → pong) and the OpusHead. **Not yet tried:** the real tunnel and the user's
+phone over mobile data, the camera and the sound on a real phone.
 
 ## Spike results
 

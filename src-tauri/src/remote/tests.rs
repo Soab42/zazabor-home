@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::capture::{description, Encoder, Params};
+use super::capture::{description, Encoder, Params, Source};
 use super::inject::{char_keysym, free_keycodes, locate, to_pixel, wheel_button, wheel_clicks, Place};
 use super::proto::*;
 use super::{pick_monitor, MonitorInfo};
@@ -250,7 +250,7 @@ fn the_monitor_asked_for_else_the_primary() {
 
 #[test]
 fn the_capture_pipeline_describes_one_monitor() {
-    let p = Params { display: ":0".into(), rect: (1920, 0, 1920, 1080), size: (1600, 900), fps: 30, kbps: 5000, encoder: Encoder::X264 };
+    let p = Params { source: Source::Screen { display: ":0".into(), rect: (1920, 0, 1920, 1080) }, size: (1600, 900), fps: 30, kbps: 5000, encoder: Encoder::X264 };
     let d = description(&p);
     assert!(d.contains("startx=1920 starty=0 endx=3839 endy=1079"), "{d}");
     assert!(d.contains("video/x-raw,width=1600,height=900"));
@@ -274,12 +274,18 @@ fn media_actions_map_to_mpris_and_the_mixer() {
 
 #[test]
 fn settings_are_cleaned() {
-    let s = super::store::Settings { enabled: true, always: vec!["x".into(), "ab".repeat(16), "ab".repeat(16)], view_only: false, encoder: "nvenc".into() }.cleaned();
+    let s = super::store::Settings { enabled: true, always: vec!["x".into(), "ab".repeat(16), "ab".repeat(16)], view_only: false, encoder: "nvenc".into(), internet: true, internet_host: " Link.Example.com. ".into(), media: false }.cleaned();
     assert_eq!(s.always, vec!["ab".repeat(16)]);
     assert_eq!(s.encoder, "x264");
+    assert_eq!(s.internet_host, "link.example.com");
+    assert!(s.internet);
+    // No usable hostname, no internet path.
+    let bad = super::store::Settings { internet: true, internet_host: "https://link.example.com/ws".into(), ..super::store::Settings::default() }.cleaned();
+    assert!(!bad.internet && bad.internet_host.is_empty());
     let d: super::store::Settings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
     assert!(d.enabled && d.always.is_empty() && d.encoder == "x264");
     assert!(!super::store::Settings::default().enabled, "remote control is off until the user turns it on");
+    assert!(!d.internet && !d.media, "the internet path and the camera are off until the user turns them on");
 }
 
 /// Phase 0 spike: the injector against a real X display (`ZREM_TEST_DISPLAY=:46`). A test window
@@ -359,4 +365,156 @@ fn xtest_reaches_a_window() {
         assert_eq!(&keys[5..], &[0xe9, 0x0100_20ac, 0x0100_09ac, 0x0100_09be, 0x0101_f600], "{keys:x?}");
         (x.XCloseDisplay)(d);
     }
+}
+
+// ---- the internet path (anywhere.rs) ----------------------------------------------------------
+
+use super::anywhere;
+
+#[test]
+fn websocket_frames_round_trip_masked_and_not() {
+    for len in [0usize, 5, 125, 126, 300, 65_535, 65_536, 200_000] {
+        let payload = (0..len).map(|i| (i * 7 % 251) as u8).collect::<Vec<_>>();
+        for mask in [None, Some([1, 2, 3, 250])] {
+            let mut wire = Vec::new();
+            anywhere::write_frame(&mut wire, anywhere::OP_BINARY, &payload, mask).unwrap();
+            let f = anywhere::read_frame(&mut &wire[..], 1 << 20).unwrap();
+            assert_eq!((f.op, f.masked, f.payload.len()), (anywhere::OP_BINARY, mask.is_some(), len));
+            assert_eq!(f.payload, payload);
+        }
+    }
+    // RFC 6455 §5.7: a masked "Hello".
+    let hello = [0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58];
+    let f = anywhere::read_frame(&mut &hello[..], 100).unwrap();
+    assert_eq!((f.op, f.masked, f.payload.as_slice()), (anywhere::OP_TEXT, true, &b"Hello"[..]));
+    // Too big is refused before it's read.
+    let mut big = Vec::new();
+    anywhere::write_frame(&mut big, anywhere::OP_BINARY, &[0; 200], None).unwrap();
+    assert!(anywhere::read_frame(&mut &big[..], 100).is_err());
+}
+
+#[test]
+fn requests_are_read_and_routed() {
+    let raw = b"GET /ws/remote/40123?x=1 HTTP/1.1\r\nHost: link.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCF-Connecting-IP: 203.0.113.9\r\n\r\n";
+    let req = anywhere::read_request(&mut &raw[..]).unwrap();
+    assert_eq!((req.method.as_str(), req.path.as_str()), ("GET", "/ws/remote/40123?x=1"));
+    assert_eq!(req.headers["cf-connecting-ip"], "203.0.113.9");
+    assert_eq!(anywhere::route("/ws/link", Some(47213), |_| false), Some((47213, true)));
+    assert_eq!(anywhere::route("/ws/link", None, |_| true), None, "Phone Link is off");
+    assert_eq!(anywhere::route("/ws/remote/40123?x=1", Some(1), |p| p == 40123), Some((40123, false)));
+    assert_eq!(anywhere::route("/ws/remote/40124", Some(1), |p| p == 40123), None, "only a port that waits for its phone");
+    assert_eq!(anywhere::route("/ws/remote/x", Some(1), |_| true), None);
+    assert_eq!(anywhere::route("/", Some(1), |_| true), None);
+    let long = vec![b'a'; 9000];
+    assert!(anywhere::read_request(&mut &long[..]).is_err());
+}
+
+#[test]
+fn each_address_gets_a_limited_number_of_connections() {
+    let mut hits = std::collections::HashMap::new();
+    let t0 = std::time::Instant::now();
+    for _ in 0..30 {
+        assert!(anywhere::admit(&mut hits, "203.0.113.9", t0));
+    }
+    assert!(!anywhere::admit(&mut hits, "203.0.113.9", t0));
+    assert!(anywhere::admit(&mut hits, "198.51.100.1", t0), "another address has its own share");
+    assert!(anywhere::admit(&mut hits, "203.0.113.9", t0 + Duration::from_secs(601)), "the share comes back");
+}
+
+/// The real bridge in front of an echo server: the handshake, bytes both ways in pieces, pings,
+/// and the connection marked as bridged while it lasts.
+#[test]
+fn the_bridge_pipes_a_websocket_to_a_port() {
+    use std::io::{BufRead, Read};
+    let echo = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    let (peer_tx, peer_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut s, peer) = echo.accept().unwrap();
+        peer_tx.send(peer).unwrap();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = s.read(&mut buf) {
+            if n == 0 || s.write_all(&buf[..n]).is_err() {
+                break;
+            }
+        }
+    });
+    let bridge = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bridge_port = bridge.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (s, _) = bridge.accept().unwrap();
+        let _ = anywhere::handle(s, Some(echo_port));
+    });
+    let mut ws = TcpStream::connect(("127.0.0.1", bridge_port)).unwrap();
+    ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    ws.write_all(b"GET /ws/link HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n").unwrap();
+    let mut reader = std::io::BufReader::new(ws.try_clone().unwrap());
+    let mut status = String::new();
+    reader.read_line(&mut status).unwrap();
+    assert!(status.starts_with("HTTP/1.1 101"), "{status}");
+    let mut accept = String::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+        if let Some(v) = line.to_ascii_lowercase().strip_prefix("sec-websocket-accept:") {
+            accept = v.trim().to_string();
+        }
+    }
+    assert_eq!(accept, "s3pplmbitxaq9kygzzhzrbk+xoo=", "RFC 6455's example key (lowercased)");
+    let peer = peer_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(anywhere::is_bridged(&peer), "the listener can tell the connection came through the bridge");
+
+    anywhere::write_frame(&mut ws, anywhere::OP_BINARY, b"ZLNK/1\n{\"a\":", Some([9, 8, 7, 6])).unwrap();
+    anywhere::write_frame(&mut ws, anywhere::OP_PING, b"p", Some([1, 1, 1, 1])).unwrap();
+    anywhere::write_frame(&mut ws, anywhere::OP_BINARY, b"1}\n", Some([0, 0, 0, 0])).unwrap();
+    let mut got = Vec::new();
+    let mut pong = false;
+    while got.len() < 15 || !pong {
+        let f = anywhere::read_frame(&mut reader, 1 << 20).unwrap();
+        assert!(!f.masked, "the server's frames go unmasked");
+        match f.op {
+            anywhere::OP_BINARY => got.extend(f.payload),
+            anywhere::OP_PONG => pong = f.payload == b"p",
+            op => panic!("unexpected frame {op}"),
+        }
+    }
+    assert_eq!(got, b"ZLNK/1\n{\"a\":1}\n");
+    assert!(pong);
+    // An unmasked frame from a client ends the pipe.
+    anywhere::write_frame(&mut ws, anywhere::OP_BINARY, b"x", None).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!anywhere::is_bridged(&peer), "the mark goes with the connection");
+}
+
+#[test]
+fn audio_pipelines_and_frames() {
+    use super::audio::{description, Audio};
+    assert!(description(Audio::Off, 64).is_none());
+    let sound = description(Audio::Sound, 64).unwrap();
+    assert!(sound.starts_with("pulsesrc device=\"@DEFAULT_MONITOR@\""), "{sound}");
+    assert!(sound.contains("opusenc bitrate=64000 frame-size=20") && sound.contains("rate=48000,channels=2"));
+    assert!(description(Audio::Mic, 999).unwrap().contains("@DEFAULT_SOURCE@") && description(Audio::Mic, 999).unwrap().contains("bitrate=256000"));
+    assert_eq!(Audio::parse("mic"), Audio::Mic);
+    assert_eq!(Audio::parse("speakers"), Audio::Off);
+    let f = audio_frame(0x0102030405060708, &[0xaa, 0xbb]);
+    assert_eq!(f, vec![0x11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0xaa, 0xbb]);
+}
+
+#[test]
+fn the_camera_pipeline_uses_the_cameras_mode() {
+    use super::capture::native_size;
+    use crate::recorder::pipeline::Mode;
+    let mjpeg = Source::Camera { path: "/dev/video0".into(), mode: Some(Mode { mjpeg: true, width: 1280, height: 720, fps: 30 }) };
+    let p = Params { source: mjpeg.clone(), size: (960, 540), fps: 30, kbps: 2000, encoder: Encoder::X264 };
+    let d = description(&p);
+    assert!(d.starts_with("v4l2src device=\"/dev/video0\" ! image/jpeg,width=1280,height=720,framerate=30/1 ! jpegdec ! queue"), "{d}");
+    assert!(d.contains("video/x-raw,width=960,height=540") && d.contains("bitrate=2000"));
+    assert_eq!(native_size(&mjpeg), (1280, 720));
+    let raw = description(&Params { source: Source::Camera { path: "/dev/video2".into(), mode: Some(Mode { mjpeg: false, width: 640, height: 480, fps: 30 }) }, ..p.clone() });
+    assert!(raw.starts_with("v4l2src device=\"/dev/video2\" ! video/x-raw,width=640,height=480,framerate=30/1 ! queue"), "{raw}");
+    assert!(description(&Params { source: Source::Camera { path: "/dev/video4".into(), mode: None }, ..p.clone() }).starts_with("v4l2src device=\"/dev/video4\" ! decodebin ! queue"));
+    assert!(description(&Params { source: Source::Camera { path: "test".into(), mode: None }, ..p }).starts_with("videotestsrc is-live=true"));
 }

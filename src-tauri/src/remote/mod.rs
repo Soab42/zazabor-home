@@ -9,7 +9,13 @@
 //! sealed H.264 frames (`capture.rs`) while input events come back (`inject.rs`, `media.rs`).
 //! A bright pill (`ui.rs`) shows on every monitor while it runs, and Ctrl+Alt+Esc
 //! (`killswitch.rs`) ends it from the PC's own keyboard.
+//!
+//! The phone can also switch the picture to the PC's camera and ask for the PC's sound or its
+//! microphone (`audio.rs`); the camera and the microphone need their own setting, and the pill
+//! shows them while they're on. Away from home all of it runs through `anywhere.rs`.
 
+pub mod anywhere;
+mod audio;
 mod capture;
 mod inject;
 mod killswitch;
@@ -54,6 +60,16 @@ pub fn init(app: AppHandle, data_dir: std::path::PathBuf) {
     store::init(data_dir.join("remote.json"));
     ui::init(app.clone());
     let _ = APP.set(app);
+    if let Err(e) = anywhere::apply() {
+        eprintln!("Remote (internet): {e}");
+    }
+}
+
+/// Settings' page refreshes (the internet path's tunnel changed state).
+pub(crate) fn emit_changed() {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("remote-changed", json!({}));
+    }
 }
 
 /// A session, from the question to the last frame.
@@ -61,6 +77,8 @@ pub struct Session {
     id: u64,
     phone_id: String,
     phone_name: String,
+    /// The phone came through the internet path.
+    internet: bool,
     stop: AtomicBool,
     stream: Mutex<Option<std::net::TcpStream>>,
 }
@@ -110,11 +128,6 @@ pub fn pick_monitor(list: &[MonitorInfo], wanted: Option<usize>) -> Option<usize
     wanted.filter(|i| *i < list.len()).or_else(|| list.iter().position(|m| m.primary)).or(if list.is_empty() { None } else { Some(0) })
 }
 
-/// What the capture sends for a monitor under the phone's size limit.
-pub fn picture_size(m: &MonitorInfo, max: (u32, u32)) -> (u32, u32) {
-    crate::recorder::pipeline::output_size((m.w, m.h), max)
-}
-
 fn random<const N: usize>() -> [u8; N] {
     let mut out = [0u8; N];
     SystemRandom::new().fill(&mut out).expect("the system's random source");
@@ -162,21 +175,44 @@ pub fn on_message(link: Arc<Link>, msg: Value) {
 }
 
 /// Claims the one session slot.
-fn claim(phone_id: &str, phone_name: &str) -> Result<Arc<Session>> {
+fn claim(phone_id: &str, phone_name: &str, internet: bool) -> Result<Arc<Session>> {
     let mut active = lock(&ACTIVE);
-    if active.is_some() {
-        return Err("Another remote session is running on this PC.".into());
+    if let Some(old) = active.as_ref() {
+        // The same phone asking again has left its old session (the app was closed or the network
+        // changed): this one takes over. Another phone has to wait.
+        if old.phone_id != phone_id {
+            return Err("Another remote session is running on this PC.".into());
+        }
+        eprintln!("Remote: {phone_name} asked again; its old session ends");
+        old.stop();
     }
-    let s = Arc::new(Session { id: NEXT_ID.fetch_add(1, Ordering::SeqCst), phone_id: phone_id.into(), phone_name: phone_name.into(), stop: AtomicBool::new(false), stream: Mutex::new(None) });
+    let s = Arc::new(Session { id: NEXT_ID.fetch_add(1, Ordering::SeqCst), phone_id: phone_id.into(), phone_name: phone_name.into(), internet, stop: AtomicBool::new(false), stream: Mutex::new(None) });
     *active = Some(s.clone());
     Ok(s)
 }
 
-fn release(s: &Session) {
+/// Frees the slot if this session still holds it (false when another one took over).
+fn release(s: &Session) -> bool {
     let mut active = lock(&ACTIVE);
     if active.as_ref().is_some_and(|a| a.id == s.id) {
         *active = None;
+        return true;
     }
+    false
+}
+
+/// Waits up to `wait` for a session's helper thread; one that hangs (a capture that won't stop)
+/// is left behind rather than holding the session.
+fn join_for(handle: std::thread::JoinHandle<()>, what: &str, wait: Duration) {
+    let end = Instant::now() + wait;
+    while !handle.is_finished() {
+        if Instant::now() >= end {
+            eprintln!("Remote: the {what} thread didn't end; leaving it");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = handle.join();
 }
 
 fn start(link: &Arc<Link>, msg: &Value) -> Result<Value> {
@@ -188,26 +224,35 @@ fn start(link: &Arc<Link>, msg: &Value) -> Result<Value> {
     let phone_id = link.phone_id.clone();
     let paired = hub.with_db(|c| crate::phonelink::store::phone(c, &phone_id))?.ok_or("This PC doesn't know this phone.")?;
     let name = paired.name.clone();
-    let session = claim(&phone_id, &name)?;
+    let session = claim(&phone_id, &name, link.via_internet)?;
     match prepare(hub, &session, msg, &settings, &phone_id) {
         Ok(answer) => Ok(answer),
         Err(e) => {
-            release(&session);
-            ui::hide();
+            if release(&session) {
+                ui::hide();
+            }
             Err(e)
         }
     }
 }
 
 fn prepare(hub: &Arc<crate::phonelink::Hub>, session: &Arc<Session>, msg: &Value, settings: &store::Settings, phone_id: &str) -> Result<Value> {
+    let num = |k: &str| msg.get(k).and_then(Value::as_u64);
+    let cameras = cameras();
+    let wants_camera = msg.get("source").and_then(Value::as_str) == Some("camera");
+    if wants_camera && !settings.media {
+        return Err(MEDIA_OFF.into());
+    }
+    if wants_camera && cameras.is_empty() {
+        return Err("This PC has no camera.".into());
+    }
     if !settings.always.iter().any(|p| p == phone_id) {
-        match ui::ask(&session.phone_name) {
+        match ui::ask(&session.phone_name, if wants_camera { "camera" } else { "control" }) {
             ui::Choice::Deny => return Err("Remote control was declined on the PC.".into()),
             ui::Choice::Always => store::allow_always(phone_id),
             ui::Choice::Once => {}
         }
     }
-    let num = |k: &str| msg.get(k).and_then(Value::as_u64);
     let want_video = msg.get("video").and_then(Value::as_bool).unwrap_or(true);
     let view_only = settings.view_only || msg.get("viewOnly").and_then(Value::as_bool).unwrap_or(false);
     let display = display_name();
@@ -218,17 +263,42 @@ fn prepare(hub: &Arc<crate::phonelink::Hub>, session: &Arc<Session>, msg: &Value
     let kbps = num("kbps").unwrap_or(4000).clamp(300, 30_000) as u32;
 
     let link_key = hub.with_db(|c| crate::phonelink::store::link_key(c, phone_id))?.ok_or("This PC doesn't know this phone.")?;
-    let listener = TcpListener::bind(("0.0.0.0", 0)).map_err(|e| format!("Couldn't open a port for the screen: {e}"))?;
+    // A phone on the internet comes through the bridge on this PC, so its port stays off the network.
+    let listener = TcpListener::bind((if session.internet { "127.0.0.1" } else { "0.0.0.0" }, 0)).map_err(|e| format!("Couldn't open a port for the screen: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let wss = if session.internet {
+        anywhere::allow_remote_port(port, Instant::now() + DIAL_WAIT);
+        Some(anywhere::remote_url(port).ok_or("The internet path was just turned off.")?)
+    } else {
+        None
+    };
     let expect = Expect { phone_id: phone_id.to_string(), token: random::<16>(), link_key, pc_nonce: random::<16>() };
     let token = base64(&expect.token);
-    let size = picture_size(&list[idx], max);
-
-    let target = Target { monitors: list.clone(), index: idx, max, version: 0 };
-    let params = Params { display, fps, kbps, encoder: capture::Encoder::parse(&settings.encoder), video: want_video };
+    let camera_names: Vec<Value> = cameras.iter().map(|c| json!({"name": c.name})).collect();
+    let camera = wants_camera.then(|| num("camera").map(|n| n as usize).filter(|i| *i < cameras.len()).unwrap_or(0));
+    let target = Target { monitors: list.clone(), index: idx, max, version: 0, cameras, camera };
+    let size = target.size();
+    let params = Params { display, fps, kbps, encoder: capture::Encoder::parse(&settings.encoder), video: want_video, media: settings.media };
+    let source = target.source_name();
     let s = session.clone();
     std::thread::Builder::new().name("remote-session".into()).spawn(move || run(s, listener, expect, target, params, view_only)).map_err(|e| e.to_string())?;
-    Ok(json!({"port": port, "token": token, "monitors": list, "monitor": idx, "w": size.0, "h": size.1, "fps": fps, "viewOnly": view_only, "video": want_video, "encoder": settings.encoder}))
+    let mut answer = json!({"port": port, "token": token, "monitors": list, "monitor": idx, "w": size.0, "h": size.1, "fps": fps, "viewOnly": view_only, "video": want_video, "encoder": settings.encoder, "source": source, "cameras": camera_names, "media": settings.media, "internet": session.internet});
+    if let Some(url) = wss {
+        answer["wss"] = json!(url);
+    }
+    Ok(answer)
+}
+
+const MEDIA_OFF: &str = "The camera and microphone are off for phones on this PC. Turn them on in Settings → Phone Link → Remote control.";
+
+/// The cameras a phone may pick (and a test picture when `ZREM_TEST_CAMERA` is set).
+fn cameras() -> Vec<crate::recorder::devices::CameraDevice> {
+    // The device monitor needs GStreamer started (the recorder may not have run yet).
+    let mut list = if gstreamer::init().is_ok() { crate::recorder::devices::list(false, true).cameras } else { Vec::new() };
+    if std::env::var_os("ZREM_TEST_CAMERA").is_some() {
+        list.push(crate::recorder::devices::CameraDevice { path: "test".into(), name: "Test picture".into(), mode: None });
+    }
+    list
 }
 
 /// What the capture and the injector aim at; the version changes when the monitor does.
@@ -237,11 +307,33 @@ struct Target {
     index: usize,
     max: (u32, u32),
     version: u64,
+    cameras: Vec<crate::recorder::devices::CameraDevice>,
+    /// Which camera the picture shows; None is the monitor.
+    camera: Option<usize>,
 }
 
 impl Target {
     fn monitor(&self) -> &MonitorInfo {
         &self.monitors[self.index]
+    }
+
+    fn source(&self, display: &str) -> capture::Source {
+        match self.camera.and_then(|i| self.cameras.get(i)) {
+            Some(c) => capture::Source::Camera { path: c.path.clone(), mode: c.mode },
+            None => {
+                let m = self.monitor();
+                capture::Source::Screen { display: display.to_string(), rect: (m.x, m.y, m.w, m.h) }
+            }
+        }
+    }
+
+    /// The picture's size under the phone's limit.
+    fn size(&self) -> (u32, u32) {
+        crate::recorder::pipeline::output_size(capture::native_size(&self.source("")), self.max)
+    }
+
+    fn source_name(&self) -> &'static str {
+        if self.camera.is_some() { "camera" } else { "screen" }
     }
 }
 
@@ -251,6 +343,8 @@ struct Params {
     kbps: u32,
     encoder: capture::Encoder,
     video: bool,
+    /// The camera and microphone may be used.
+    media: bool,
 }
 
 /// The sealed writer both the video thread and the replies share.
@@ -266,13 +360,21 @@ fn send(out: &Mutex<Out>, plain: &[u8]) -> Result<()> {
 }
 
 fn info(target: &Target, params: &Params, view_only: bool) -> Value {
-    let m = target.monitor();
-    let (w, h) = picture_size(m, target.max);
-    json!({"t": "info", "w": w, "h": h, "monitor": target.index, "monitors": target.monitors, "fps": params.fps, "viewOnly": view_only, "video": params.video, "encoder": params.encoder.name()})
+    let (w, h) = target.size();
+    let cameras: Vec<Value> = target.cameras.iter().map(|c| json!({"name": c.name})).collect();
+    json!({"t": "info", "w": w, "h": h, "monitor": target.index, "monitors": target.monitors, "fps": params.fps, "viewOnly": view_only, "video": params.video, "encoder": params.encoder.name(),
+        "source": target.source_name(), "camera": target.camera, "cameras": cameras, "media": params.media})
+}
+
+fn notice(out: &Mutex<Out>, text: &str) {
+    let _ = send(out, &proto::json_frame(&json!({"t": "notice", "text": text})));
 }
 
 fn run(session: Arc<Session>, listener: TcpListener, expect: Expect, target: Target, params: Params, view_only: bool) {
     let dialed = proto::accept_dial(&listener, &expect, DIAL_WAIT);
+    if let Ok(addr) = listener.local_addr() {
+        anywhere::forbid_remote_port(addr.port());
+    }
     drop(listener);
     match dialed {
         Ok(d) => {
@@ -283,8 +385,11 @@ fn run(session: Arc<Session>, listener: TcpListener, expect: Expect, target: Tar
         Err(e) => eprintln!("Remote: {e}"),
     }
     session.stop();
-    ui::hide();
-    release(&session);
+    // A session that another one took over leaves the pill and the slot to it.
+    if release(&session) {
+        ui::hide();
+    }
+    eprintln!("Remote: session {} with {} ended", session.id, session.phone_name);
     if let Some(app) = APP.get() {
         let _ = app.emit("remote-ended", json!({"phoneId": session.phone_id}));
     }
@@ -296,8 +401,10 @@ fn serve(session: &Arc<Session>, d: Dialed, target: Target, params: &Params, vie
     stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     *lock(&session.stream) = Some(stream.try_clone().map_err(|e| e.to_string())?);
     let out = Arc::new(Mutex::new(Out { stream: stream.try_clone().map_err(|e| e.to_string())?, cipher: tx }));
+    eprintln!("Remote: session {} with {} started{}", session.id, session.phone_name, if session.internet { " over the internet" } else { "" });
     send(&out, &proto::json_frame(&info(&target, params, view_only)))?;
-    ui::live(&session.phone_name, view_only);
+    ui::live(&session.phone_name, view_only, session.internet);
+    ui::media(target.camera.is_some(), false);
     let _kill = {
         let s = session.clone();
         killswitch::arm(&params.display, move || {
@@ -323,6 +430,13 @@ fn serve(session: &Arc<Session>, d: Dialed, target: Target, params: &Params, vie
                 session.stop();
             }
         }))
+    };
+
+    // The phone's sound: off until it asks.
+    let audio_want = Arc::new(Mutex::new(audio::Audio::Off));
+    let sound = {
+        let (session, out, want) = (session.clone(), out.clone(), audio_want.clone());
+        std::thread::Builder::new().name("remote-audio".into()).spawn(move || audio_loop(&session, &out, &want)).ok()
     };
 
     let mut injector = if view_only {
@@ -375,10 +489,47 @@ fn serve(session: &Arc<Session>, d: Dialed, target: Target, params: &Params, vie
                         drop(t);
                         let _ = send(&out, &proto::json_frame(&msg));
                     }
+                    // The picture shows the screen or a camera.
+                    "source" => {
+                        let camera = v.get("src").and_then(Value::as_str) == Some("camera");
+                        let mut t = lock(&target);
+                        if camera && !params.media {
+                            drop(t);
+                            notice(&out, MEDIA_OFF);
+                            continue;
+                        }
+                        if camera && t.cameras.is_empty() {
+                            drop(t);
+                            notice(&out, "This PC has no camera.");
+                            continue;
+                        }
+                        eprintln!("Remote: the picture switches to the {}", if camera { "camera" } else { "screen" });
+                        let next = camera.then(|| v.get("i").and_then(Value::as_u64).map(|i| i as usize).filter(|i| *i < t.cameras.len()).unwrap_or(0));
+                        if next != t.camera {
+                            t.camera = next;
+                            t.version += 1;
+                        }
+                        let msg = info(&t, params, view_only);
+                        drop(t);
+                        want_key.store(true, Ordering::SeqCst);
+                        ui::media(next.is_some(), *lock(&audio_want) == audio::Audio::Mic);
+                        let _ = send(&out, &proto::json_frame(&msg));
+                    }
+                    "audio" => {
+                        let which = audio::Audio::parse(v.get("src").and_then(Value::as_str).unwrap_or("off"));
+                        if which == audio::Audio::Mic && !params.media {
+                            notice(&out, MEDIA_OFF);
+                            continue;
+                        }
+                        eprintln!("Remote: sound {}", which.name());
+                        *lock(&audio_want) = which;
+                        ui::media(lock(&target).camera.is_some(), which == audio::Audio::Mic);
+                    }
                     "monitor" => {
                         let mut t = lock(&target);
                         if let Some(i) = v.get("i").and_then(Value::as_u64).map(|i| i as usize).filter(|i| *i < t.monitors.len()) {
                             t.index = i;
+                            t.camera = None;
                             t.version += 1;
                             let msg = info(&t, params, view_only);
                             drop(t);
@@ -397,7 +548,8 @@ fn serve(session: &Arc<Session>, d: Dialed, target: Target, params: &Params, vie
                         continue;
                     }
                 };
-                if view_only {
+                // Nothing to point at while the picture is a camera; the media keys still work.
+                if view_only || (lock(&target).camera.is_some() && !matches!(event, Input::Media(_))) {
                     continue;
                 }
                 if locked.0.elapsed() > Duration::from_secs(2) {
@@ -430,7 +582,10 @@ fn serve(session: &Arc<Session>, d: Dialed, target: Target, params: &Params, vie
     };
     session.stop();
     if let Some(Ok(handle)) = video {
-        let _ = handle.join();
+        join_for(handle, "picture", Duration::from_secs(3));
+    }
+    if let Some(handle) = sound {
+        join_for(handle, "sound", Duration::from_secs(3));
     }
     drop(injector);
     let _ = send(&out, &proto::json_frame(&json!({"t": "end"})));
@@ -474,10 +629,7 @@ fn video_loop(
     fps: u32,
     encoder: capture::Encoder,
 ) -> Result<()> {
-    let make = |t: &Target, kbps: u32| -> Result<capture::Capture> {
-        let m = t.monitor();
-        capture::Capture::start(&capture::Params { display: display.to_string(), rect: (m.x, m.y, m.w, m.h), size: picture_size(m, t.max), fps, kbps, encoder })
-    };
+    let make = |t: &Target, kbps: u32| -> Result<capture::Capture> { capture::Capture::start(&capture::Params { source: t.source(display), size: t.size(), fps, kbps, encoder }) };
     let (mut version, mut rate) = {
         let t = lock(target);
         (t.version, *lock(kbps))
@@ -500,7 +652,20 @@ fn video_loop(
                 if let Some(c) = cap.take() {
                     c.stop();
                 }
-                cap = Some(make(&t, rate)?);
+                cap = Some(match make(&t, rate) {
+                    Ok(c) => c,
+                    // A camera that won't open (busy in another app, unplugged): back to the screen.
+                    Err(e) if t.camera.is_some() => {
+                        drop(t);
+                        notice(out, &format!("The camera didn't open: {e}"));
+                        let mut t = lock(target);
+                        t.camera = None;
+                        t.version += 1;
+                        ui::media(false, false);
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                });
                 need_key = true;
             }
         }
@@ -537,6 +702,52 @@ fn video_loop(
     Ok(())
 }
 
+/// Sends the sound the phone asked for, switching sources as it asks, until the session ends.
+fn audio_loop(session: &Session, out: &Mutex<Out>, want: &Mutex<audio::Audio>) {
+    let mut current = audio::Audio::Off;
+    let mut cap: Option<audio::Capture> = None;
+    while !session.stopped() {
+        let wanted = *lock(want);
+        if wanted != current {
+            if let Some(c) = cap.take() {
+                c.stop();
+            }
+            current = wanted;
+            if wanted != audio::Audio::Off {
+                match audio::Capture::start(wanted, 64) {
+                    Ok(c) => cap = Some(c),
+                    Err(e) => {
+                        notice(out, &e);
+                        *lock(want) = audio::Audio::Off;
+                        current = audio::Audio::Off;
+                    }
+                }
+            }
+            let _ = send(out, &proto::json_frame(&json!({"t": "audio", "src": current.name(), "codec": "opus", "rate": audio::RATE, "channels": audio::CHANNELS, "preSkip": audio::PRE_SKIP})));
+        }
+        let Some(c) = cap.as_ref() else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        match c.pull(100) {
+            Ok(Some(packet)) => {
+                let pts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0);
+                if send(out, &proto::audio_frame(pts, &packet)).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                notice(out, &e);
+                *lock(want) = audio::Audio::Off;
+            }
+        }
+    }
+    if let Some(c) = cap {
+        c.stop();
+    }
+}
+
 // ---- the page's commands --------------------------------------------------------------------
 
 #[tauri::command]
@@ -545,8 +756,33 @@ pub fn remote_settings() -> store::Settings {
 }
 
 #[tauri::command]
-pub fn remote_set_settings(settings: store::Settings) -> Result<store::Settings> {
-    store::set(settings)
+pub async fn remote_set_settings(settings: store::Settings) -> Result<store::Settings> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let saved = store::set(settings)?;
+        if let Err(e) = anywhere::apply() {
+            // It couldn't start: don't leave the switch on.
+            if saved.internet {
+                store::set(store::Settings { internet: false, ..saved })?;
+                anywhere::stop();
+            }
+            return Err(e);
+        }
+        Ok(saved)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The internet path's state for Settings.
+#[tauri::command]
+pub fn remote_internet_status() -> anywhere::Status {
+    anywhere::status()
+}
+
+/// Settings' Test: does the public hostname reach this PC?
+#[tauri::command]
+pub async fn remote_internet_test() -> Result<Value> {
+    tauri::async_runtime::spawn_blocking(anywhere::check).await.map_err(|e| e.to_string())?
 }
 
 /// The window's answer to "<phone> wants to control this PC": "once", "always" or "deny".

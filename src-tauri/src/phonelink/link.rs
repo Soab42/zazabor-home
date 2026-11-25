@@ -262,6 +262,8 @@ fn str_field<'a>(v: &'a Value, key: &str) -> &'a str {
 /// The PC's side of one connected phone.
 pub struct Link {
     pub phone_id: String,
+    /// It came through the internet bridge (`remote::anywhere`), not the local network.
+    pub via_internet: bool,
     stream: TcpStream,
     writer: Mutex<Cipher>,
     pending: Mutex<HashMap<u32, mpsc::Sender<Value>>>,
@@ -276,9 +278,10 @@ impl Link {
         self.stream.peer_addr().ok().map(|a| a.ip())
     }
 
-    fn new(phone_id: String, stream: TcpStream, cipher: Cipher) -> Link {
+    fn new(phone_id: String, stream: TcpStream, cipher: Cipher, via_internet: bool) -> Link {
         Link {
             phone_id,
+            via_internet,
             stream,
             writer: Mutex::new(cipher),
             pending: Mutex::new(HashMap::new()),
@@ -379,7 +382,8 @@ pub fn listen(hub: &Arc<Hub>, host: &str, port: u16) -> Result<Listener> {
     let listener = if port == 0 {
         TcpListener::bind((host, 0))
     } else {
-        (port..port.saturating_add(20)).find_map(|p| TcpListener::bind((host, p)).ok()).map_or_else(|| TcpListener::bind((host, 0)), Ok)
+        // 47214 is the internet path's own port (`remote::anywhere`), never Phone Link's.
+        (port..port.saturating_add(20)).filter(|p| *p != crate::remote::anywhere::PORT).find_map(|p| TcpListener::bind((host, p)).ok()).map_or_else(|| TcpListener::bind((host, 0)), Ok)
     }
     .map_err(|e| format!("Phone Link can't listen: {e}"))?;
     let port = listener.local_addr().map_err(net_err)?.port();
@@ -440,6 +444,12 @@ pub fn accept(hub: &Arc<Hub>, stream: TcpStream) -> Result<()> {
     let name = str_field(&hello, "name").to_string();
     let model = str_field(&hello, "model").to_string();
     let wants_pair = hello.get("pair").and_then(Value::as_bool).unwrap_or(false);
+    // The bridge marks its connection before it forwards a byte, so this is known by now.
+    let via_internet = stream.peer_addr().is_ok_and(|a| crate::remote::anywhere::is_bridged(&a));
+    if via_internet && wants_pair {
+        write_line(&mut out, &json!({"ok": false, "reason": "Pair on the same Wi-Fi as the PC first. Over the internet, only phones already paired can connect."}))?;
+        return Err("A phone tried to pair over the internet; refused.".into());
+    }
     // SHA-256 of the key the phone will pair with, fixed before it sees the PC's key.
     let commit = unbase64(str_field(&hello, "commit")).filter(|c| c.len() == 32);
     let pc_nonce = random::<16>();
@@ -482,7 +492,7 @@ pub fn accept(hub: &Arc<Hub>, stream: TcpStream) -> Result<()> {
         }
     };
     stream.set_read_timeout(Some(hub.timing.dead)).map_err(net_err)?;
-    let link = Arc::new(Link::new(phone_id.clone(), stream.try_clone().map_err(net_err)?, tx));
+    let link = Arc::new(Link::new(phone_id.clone(), stream.try_clone().map_err(net_err)?, tx, via_internet));
     hub.connected(&link, &first);
     keep_alive(hub, &link);
     let end = loop {

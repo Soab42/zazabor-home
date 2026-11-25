@@ -25,6 +25,7 @@ const paths = {
   music: `<path d="M9 17.5V6l11-2v11.5"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/>`,
   volume: `<path d="M11 5.5L6.5 9H3.5v6h3l4.5 3.5z" fill="currentColor"/><path d="M15 9a4.5 4.5 0 0 1 0 6M17.8 6.2a8.5 8.5 0 0 1 0 11.6"/>`,
   mute: `<path d="M11 5.5L6.5 9H3.5v6h3l4.5 3.5z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>`,
+  mic: `<rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/>`,
   film: `<rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M7.5 4v16M16.5 4v16M3.5 8.5h4M3.5 15.5h4M16.5 8.5h4M16.5 15.5h4"/>`,
   image: `<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="9.5" r="1.75"/><path d="M20.5 15.5l-5-5-9.5 9"/>`,
   sort: `<path d="M4 6.5h11M4 12h8M4 17.5h5M18 6v13M15 16l3 3 3-3"/>`,

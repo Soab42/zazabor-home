@@ -17,7 +17,7 @@ export function createMock(mode: string): PhoneMock {
   const day = 24 * hour;
 
   const phone: Phone = {
-    phoneId: "5947d7c33d783f94b3b4c1a96ebc8991", name: "Pixel 7", model: "Google Pixel 7", connected: mode !== "away", lastSeen: now - (mode === "away" ? 3 * hour : 0),
+    phoneId: "5947d7c33d783f94b3b4c1a96ebc8991", name: "Pixel 7", model: "Google Pixel 7", connected: mode !== "away", internet: false, lastSeen: now - (mode === "away" ? 3 * hour : 0),
     battery: 76, charging: false, signal: 3, network: "LTE", carrier: "Grameenphone", caps: ["sms", "calls", "contacts", "notifications", "files", "photos", "clipboard", "mirror"],
     unreadSms: 2, notifCount: 5,
   };

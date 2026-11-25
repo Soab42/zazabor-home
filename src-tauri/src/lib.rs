@@ -871,6 +871,8 @@ pub fn run() {
             phonelink::phone_link_call,
             remote::remote_settings,
             remote::remote_set_settings,
+            remote::remote_internet_status,
+            remote::remote_internet_test,
             remote::remote_answer,
             remote::remote_stop,
             remote::remote_ui_state,

@@ -37,6 +37,8 @@ export interface Phone {
   name: string;
   model: string;
   connected: boolean;
+  /** Connected through the internet path, not the local network. */
+  internet: boolean;
   lastSeen: number;
   battery: number | null;
   charging: boolean;
@@ -274,6 +276,8 @@ export const phoneApi = {
   // Remote control (docs/plans/remote.md)
   remoteSettings: () => call<RemoteSettings>("remote_settings"),
   remoteSetSettings: (settings: RemoteSettings) => call<RemoteSettings>("remote_set_settings", { settings }),
+  remoteInternetStatus: () => call<RemoteInternetStatus>("remote_internet_status"),
+  remoteInternetTest: () => call<{ ok: boolean; message: string }>("remote_internet_test"),
   /** Asks the phone for control of its screen (its user answers on the phone). */
   controlStart: (phoneId: string) => call<void>("phone_control_start", { phoneId }),
   control: (phoneId: string, action: ControlAction) => call<void>("phone_control", { phoneId, action }),
@@ -360,6 +364,21 @@ export interface RemoteSettings {
   always: string[];
   viewOnly: boolean;
   encoder: "x264" | "vaapi";
+  /** Phones reach this PC from any network through `internetHost` (Meet's named tunnel). */
+  internet: boolean;
+  internetHost: string;
+  /** Phones may see the camera and hear the microphone. */
+  media: boolean;
+}
+
+/** The internet path's tunnel, for Settings. */
+export interface RemoteInternetStatus {
+  on: boolean;
+  tunnel: { state: "off" | "starting" | "on" | "error"; url: string | null; error: string | null };
+  /** What the tunnel's public hostname points at: http://localhost:47214. */
+  service: string;
+  meetHost: string;
+  hasToken: boolean;
 }
 
 /** One thing the mirror window asks the phone to do (positions are fractions of its screen). */
