@@ -43,6 +43,8 @@ class RemoteClient(
     private var sendCounter = 0L
     private var recvCounter = 0L
     private val closed = AtomicBoolean(false)
+    /** Why this side closed it (the watchdog), told to the listener. */
+    @Volatile private var closeReason: String? = null
     private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "zrem-write").apply { isDaemon = true } }
 
     val isOpen: Boolean get() = !closed.get()
@@ -128,13 +130,14 @@ class RemoteClient(
                 if (!closed.get()) reason = e.message
             } finally {
                 close(reason)
-                listener.onClosed(reason)
+                listener.onClosed(reason ?: closeReason)
             }
         }
     }
 
     fun close(reason: String? = null) {
         if (!closed.compareAndSet(false, true)) return
+        closeReason = reason
         try {
             socket?.close()
         } catch (_: IOException) {

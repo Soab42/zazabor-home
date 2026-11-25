@@ -57,6 +57,11 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         private val STICKY = mapOf("Ctrl" to Keysym.CONTROL_L, "Alt" to Keysym.ALT_L, "Shift" to Keysym.SHIFT_L, "Super" to Keysym.SUPER_L)
         private val SOUNDS = listOf("off" to "Sound off", "sound" to "PC sound", "mic" to "PC mic")
         private const val CHROME_MS = 3000L
+        /** Nothing from the PC for this long (it pings back every second): the connection is gone. */
+        private const val LOST_AFTER_MS = 8000L
+        /** Seconds between reconnection tries, then the last one over and over (about 3 minutes in all). */
+        private val RETRY_S = intArrayOf(1, 2, 3, 5, 5, 10, 10, 15)
+        private const val RETRY_FOR_MS = 180_000L
 
         private class Quality(val label: String, val w: Int, val h: Int, val kbps: Int)
 
@@ -101,17 +106,28 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
     private var stats = ""
     private var ended = false
 
+    /** When the PC was last heard from (any frame), for the lost-connection watchdog. */
+    @Volatile private var lastHeard = 0L
+    /** Reconnecting after the connection dropped: since when, and how many tries so far. */
+    private var lostSince = 0L
+    private var retries = 0
+    /** The sound the user picked, asked for again after a reconnection. */
+    private var wantSound = "off"
+
     private lateinit var tabs: List<TextView>
     /** The top bar and the screen's tools: hidden while the PC's screen fills the phone. */
     private lateinit var bar: View
     private lateinit var tools: View
-    private lateinit var reveal: TextView
+    private lateinit var reveal: View
     private var chromeShown = true
     private val hideChrome = Runnable { if (showsPicture) setChrome(false) }
 
     /** Screen and Camera show the PC's picture full-screen. */
     private val showsPicture: Boolean get() = mode == SCREEN || mode == CAMERA
     private lateinit var status: TextView
+    /** The dark screen over everything while there's no picture (asking, lost, ended), with its buttons. */
+    private lateinit var statusBox: LinearLayout
+    private lateinit var statusActions: View
     private lateinit var statsLabel: TextView
     private lateinit var content: FrameLayout
     private lateinit var screenView: FrameLayout
@@ -170,16 +186,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
             setPadding(dp(6), dp(2), dp(10), dp(2))
             setBackgroundColor(getColor(R.color.surface))
         }
-        bar.addView(
-            TextView(this).apply {
-                text = "‹"
-                setTextColor(getColor(R.color.text))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
-                setPadding(dp(10), 0, dp(14), dp(3))
-                setOnClickListener { finish() }
-                contentDescription = "Close"
-            },
-        )
+        bar.addView(roundButton("✕", "Close remote control", getColor(R.color.surface_high), getColor(R.color.text)) { finish() }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(6) })
         // Five tabs, the sound button and the stats don't fit a phone held upright: they scroll.
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -233,14 +240,31 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
             setTextColor(getColor(R.color.text))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             gravity = Gravity.CENTER
-            setPadding(dp(32), dp(32), dp(32), dp(32))
+            setPadding(dp(32), dp(16), dp(32), dp(16))
             text = "Asking $pcName…"
+        }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        actions.addView(pill("Reconnect") { reconnectNow() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(10) })
+        actions.addView(pill("Close") { finish() })
+        statusActions = actions
+        // Opaque, so a picture that stopped never shows through looking frozen.
+        statusBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            addView(status)
+            addView(actions)
         }
         content.addView(screenArea)
         content.addView(padView)
         content.addView(keyboardView)
         content.addView(mediaView)
-        content.addView(status, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        content.addView(statusBox, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return root
     }
@@ -258,6 +282,21 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
             cornerRadius = dp(20).toFloat()
         }
         setOnClickListener { onClick(this) }
+    }
+
+    /** A round icon button (close, more). */
+    private fun roundButton(glyph: String, description: String, fill: Int, ink: Int, onClick: () -> Unit): TextView = TextView(this).apply {
+        text = glyph
+        setTextColor(ink)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(fill)
+        }
+        contentDescription = description
+        setOnClickListener { onClick() }
     }
 
     private fun highlight(b: Button, on: Boolean) {
@@ -346,21 +385,14 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         this.tools = toolsScroll
         // While the controls are hidden, this small button brings them back (touches on the
         // picture belong to the PC, so it can't be a tap anywhere).
-        reveal = TextView(this).apply {
-            text = "⋯"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-            gravity = Gravity.CENTER
-            alpha = 0.55f
-            background = GradientDrawable().apply {
-                setColor(0x99000000.toInt())
-                cornerRadius = dp(18).toFloat()
-            }
-            contentDescription = "Show the controls"
+        reveal = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            alpha = 0.6f
             visibility = View.GONE
-            setOnClickListener { setChrome(true) }
+            addView(roundButton("⋯", "Show the controls", 0x99000000.toInt(), Color.WHITE) { setChrome(true) }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) })
+            addView(roundButton("✕", "Close remote control", 0x99000000.toInt(), Color.WHITE) { finish() }, LinearLayout.LayoutParams(dp(40), dp(40)))
         }
-        screenView.addView(reveal, FrameLayout.LayoutParams(dp(40), dp(36), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(8), dp(8), 0) })
+        screenView.addView(reveal, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(0, dp(8), dp(8), 0) })
 
         // Typing while watching: a strip of the keys a phone keyboard lacks and a box for the phone's
         // keyboard, under the picture (which shrinks to make room, so nothing is covered).
@@ -786,6 +818,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
 
     /** Asks the PC for its sound, its microphone, or nothing; the PC's `audio` answer sets the button. */
     private fun askSound(src: String) {
+        wantSound = src
         val c = client ?: return
         c.send(JSONObject().put("t", "audio").put("src", src))
         soundButton.text = "…"
@@ -793,12 +826,14 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
 
     private fun onAudioInfo(msg: JSONObject) {
         sound = msg.optString("src", "off")
+        android.util.Log.i("ZazaborRemote", "PC sound: $sound (${msg.optString("codec")} ${msg.optInt("rate")} Hz)")
         audio?.release()
         audio = null
         if (sound != "off") {
             audio = try {
                 RemoteAudio(msg.optInt("rate", 48_000), msg.optInt("channels", 2), msg.optInt("preSkip", 312))
             } catch (e: Exception) {
+                android.util.Log.w("ZazaborRemote", "no player for the PC's sound", e)
                 toast("This phone can't play the PC's sound: ${e.message}")
                 client?.send(JSONObject().put("t", "audio").put("src", "off"))
                 null
@@ -826,7 +861,11 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
     private fun connect() {
         val tryHost = LinkService.endpoint(this)
         if (tryHost == null) {
-            showStatus("Not linked to a PC. Open Zazabor Link and pair first.")
+            if (lostSince > 0) {
+                retryLater("Waiting for the link to $pcName…")
+            } else {
+                showStatus("Not linked to a PC. Open Zazabor Link and pair first.", actions = true)
+            }
             return
         }
         pcName = tryHost.pcName
@@ -839,7 +878,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         targetKbps = q.kbps
         kbps = if (internet) INTERNET_START_KBPS else q.kbps
         steadySince = SystemClock.elapsedRealtime()
-        showStatus(if (internet) "Asking $pcName over the internet…" else "Asking $pcName…")
+        if (lostSince == 0L) showStatus(if (internet) "Asking $pcName over the internet…" else "Asking $pcName…")
         thread(name = "zrem-start", isDaemon = true) {
             try {
                 val ask = JSONObject().put("t", "remote.start").put("maxW", q.w).put("maxH", q.h).put("fps", 30).put("kbps", kbps).put("video", showsPicture)
@@ -851,16 +890,35 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
                 }
                 val c = RemoteClient(tryHost.host, re.getInt("port"), wss, Link.unb64(re.getString("token")), Identity.phoneId(this), tryHost.linkKey)
                 c.connect()
+                if (ended) {
+                    c.close()
+                    return@thread
+                }
+                lastHeard = SystemClock.elapsedRealtime()
                 client = c
                 videoOn = showsPicture
                 main.post { applyInfo(re) }
                 c.start(this)
                 main.post {
-                    status.visibility = View.GONE
+                    statusBox.visibility = View.GONE
+                    val again = lostSince > 0
+                    lostSince = 0
+                    retries = 0
                     ticker.begin()
+                    // Back where the user was: the camera and the sound they had.
+                    if (again) {
+                        if (mode == CAMERA) {
+                            pcSource = "camera"
+                            c.send(JSONObject().put("t", "source").put("src", "camera").put("i", camera))
+                        }
+                        if (wantSound != "off") askSound(wantSound)
+                        startDecoder(restart = true)
+                    }
                 }
             } catch (e: Exception) {
-                main.post { showStatus(e.message ?: "Couldn't connect to the PC") }
+                main.post {
+                    if (lostSince > 0) retryLater("Couldn't reconnect: ${e.message ?: "no answer"}") else showStatus(e.message ?: "Couldn't connect to the PC", actions = true)
+                }
             }
         }
     }
@@ -892,9 +950,36 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
         android.view.Choreographer.getInstance().postFrameCallback(clockTick)
     }
 
-    private fun showStatus(text: String) {
+    private fun showStatus(text: String, actions: Boolean = false) {
         status.text = text
-        status.visibility = View.VISIBLE
+        statusActions.visibility = if (actions) View.VISIBLE else View.GONE
+        statusBox.visibility = View.VISIBLE
+    }
+
+    private val reconnect = Runnable { if (!ended && client == null) connect() }
+
+    /** Tries again in a moment, for about three minutes; then waits for the Reconnect button. */
+    private fun retryLater(why: String) {
+        if (ended) return
+        if (SystemClock.elapsedRealtime() - lostSince > RETRY_FOR_MS) {
+            lostSince = 0
+            showStatus("$why\n\nStopped trying. Check that $pcName is on and Zazabor Home is running.", actions = true)
+            return
+        }
+        val wait = RETRY_S[minOf(retries, RETRY_S.size - 1)]
+        retries++
+        showStatus("$why\n\nTrying again in $wait s…", actions = true)
+        main.removeCallbacks(reconnect)
+        main.postDelayed(reconnect, wait * 1000L)
+    }
+
+    private fun reconnectNow() {
+        if (client != null) return
+        if (lostSince == 0L) lostSince = SystemClock.elapsedRealtime()
+        retries = 0
+        main.removeCallbacks(reconnect)
+        showStatus("Reconnecting to $pcName…", actions = true)
+        connect()
     }
 
     private fun applyInfo(info: JSONObject) {
@@ -939,6 +1024,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
     }
 
     override fun onMessage(msg: JSONObject) {
+        lastHeard = SystemClock.elapsedRealtime()
         when (msg.optString("t")) {
             "info" -> main.post { applyInfo(msg) }
             "pong" -> {
@@ -947,12 +1033,13 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
             }
             "audio" -> main.post { onAudioInfo(msg) }
             "notice" -> main.post { toast(msg.optString("text")) }
-            "error" -> main.post { showStatus(msg.optString("error", "The PC stopped the session")) }
+            "error" -> main.post { showStatus(msg.optString("error", "The PC stopped the session"), actions = true) }
             "end" -> {}
         }
     }
 
     override fun onVideo(plain: ByteArray, frame: RemoteProto.Video) {
+        lastHeard = SystemClock.elapsedRealtime()
         decoder?.feed(plain, frame)
     }
 
@@ -985,10 +1072,20 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
     override fun onClosed(reason: String?) {
         if (ended) return
         main.post {
-            if (!isFinishing) {
-                ticker.stop()
-                showStatus(reason?.let { "Disconnected: $it" } ?: "The session ended")
-            }
+            if (isFinishing || ended) return@post
+            ticker.stop()
+            // No frozen picture and no sound left playing: the session is gone.
+            client = null
+            decoder?.release()
+            decoder = null
+            audio?.release()
+            audio = null
+            sound = "off"
+            soundButton.text = SOUNDS[0].second
+            soundButton.setTextColor(getColor(R.color.muted))
+            if (lostSince == 0L) lostSince = SystemClock.elapsedRealtime()
+            retries = 0
+            retryLater("Lost the connection to $pcName${reason?.let { " ($it)" } ?: ""}.")
         }
     }
 
@@ -1021,8 +1118,15 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
                 stats = ""
             }
             if (!viewOnly) statsLabel.text = listOf(stats, if (rtt >= 0) "ping $rtt ms" else "", if (internet) "internet" else "").filter { it.isNotEmpty() }.joinToString(" · ")
-            // Over the internet the ping drives the bitrate, so it goes every second.
-            if (internet || n++ % 3 == 0) client?.send(JSONObject().put("t", "ping").put("ts", System.nanoTime() / 1_000_000))
+            // A PC that went silent (the network dropped without closing anything): end it here.
+            val c = client
+            if (c != null && SystemClock.elapsedRealtime() - lastHeard > LOST_AFTER_MS) {
+                c.close("no answer for ${LOST_AFTER_MS / 1000} s")
+            }
+            // Every second: the watchdog above counts on the answers, and over the internet the
+            // ping drives the bitrate.
+            n++
+            client?.send(JSONObject().put("t", "ping").put("ts", System.nanoTime() / 1_000_000))
             main.postDelayed(this, 1000)
         }
     }
@@ -1036,6 +1140,7 @@ class RemoteActivity : Activity(), RemoteClient.Listener {
     override fun onDestroy() {
         ended = true
         main.removeCallbacks(hideChrome)
+        main.removeCallbacks(reconnect)
         ticker.stop()
         client?.send(JSONObject().put("t", "stop"))
         decoder?.release()
