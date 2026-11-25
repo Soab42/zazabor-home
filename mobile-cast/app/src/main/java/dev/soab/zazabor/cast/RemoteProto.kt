@@ -11,6 +11,8 @@ object RemoteProto {
     const val MAGIC = "ZREM/1"
     const val K_JSON = 1
     const val K_VIDEO = 0x10
+    /** The PC's sound: `11 ‖ flags ‖ pts µs (8) ‖ one Opus packet`. */
+    const val K_AUDIO = 0x11
     const val K_INPUT = 0x20
     const val MAX_FRAME = 4 shl 20
     const val F_KEY = 1
@@ -104,6 +106,30 @@ object RemoteProto {
         for (i in 2 until 10) pts = (pts shl 8) or (plain[i].toLong() and 0xff)
         return Video((plain[1].toInt() and F_KEY) != 0, pts, 10)
     }
+
+    /** Where an audio frame's Opus packet starts. */
+    const val AUDIO_OFFSET = 10
+
+    /**
+     * The `OpusHead` (RFC 7845 §5.1) MediaCodec wants as csd-0: version 1, the channel count,
+     * the pre-skip, the input rate, no gain, mapping family 0.
+     */
+    fun opusHead(channels: Int, preSkip: Int, rate: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("OpusHead".toByteArray(Charsets.US_ASCII))
+        out.write(1)
+        out.write(channels)
+        out.write(preSkip and 0xff)
+        out.write((preSkip ushr 8) and 0xff)
+        for (i in 0 until 4) out.write((rate ushr (8 * i)) and 0xff)
+        out.write(0)
+        out.write(0)
+        out.write(0)
+        return out.toByteArray()
+    }
+
+    /** A little-endian 64-bit value (csd-1 and csd-2 are nanoseconds this way). */
+    fun le64(v: Long): ByteArray = ByteArray(8) { i -> (v ushr (8 * i)).toByte() }
 
     /** X11 keysyms the keyboard tab sends. */
     object Keysym {

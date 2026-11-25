@@ -116,7 +116,8 @@ fun accelerate(delta: Float, speed: Float): Float {
  * (empty when all are up). Direct mode puts the pointer where a finger is; trackpad mode moves it
  * by how far the finger moved. Both: a tap clicks, a two-finger tap right-clicks, a three-finger
  * tap middle-clicks, a long press then a move drags, two fingers moving scroll or (spreading or
- * pinching) zoom the picture, three fingers moving pan it.
+ * pinching) zoom the picture, and once they've zoomed, the same two fingers move it; three fingers
+ * moving pan it too. A finger resting near an edge of a zoomed picture keeps sliding it that way.
  */
 class GestureEngine(
     private val viewport: Viewport,
@@ -218,6 +219,20 @@ class GestureEngine(
         send(Input.Button(1, true))
     }
 
+    /**
+     * Called about 60 times a second while one finger is down: a finger resting in an edge band of
+     * a zoomed picture keeps sliding it (and the pointer under the finger follows). True if it moved.
+     */
+    fun edgeTick(): Boolean {
+        if (trackpad || count != 1 || peak > 1 || (!moved && !dragging) || last.isEmpty()) return false
+        val p = last[0]
+        if (!viewport.edgePan(p.x, p.y, 10f * density)) return false
+        val w = viewport.toWire(p.x, p.y)
+        send(Input.MoveAbs(w[0], w[1]))
+        onViewport()
+        return true
+    }
+
     private fun endDrag() {
         dragging = false
         send(Input.Button(1, false))
@@ -252,6 +267,11 @@ class GestureEngine(
                 if (before > 0f && abs(now - before) > abs(hypot(dx, dy)) * 0.8f && abs(now - before) > 1f) {
                     pinched = true
                     viewport.zoomAt(now / before, c[0], c[1])
+                    viewport.pan(dx, dy)
+                    onViewport()
+                } else if (pinched) {
+                    // After zooming, the same two fingers move the picture (like a photo).
+                    viewport.pan(dx, dy)
                     onViewport()
                 } else if (moved) {
                     wheelRemX += dx

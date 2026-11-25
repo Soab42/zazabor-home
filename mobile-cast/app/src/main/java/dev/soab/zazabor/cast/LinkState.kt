@@ -46,6 +46,16 @@ class LinkPrefs(context: Context) {
     val port: Int get() = prefs.getInt("port", Link.DEFAULT_PORT)
     val paired: Boolean get() = pcId != null
 
+    /**
+     * The PC's address away from home (`wss://link.example.com/ws/link`), which the PC sends
+     * while the two are linked and its internet path is on (docs/plans/remote.md "Any network").
+     */
+    var wss: String?
+        get() = prefs.getString("wss", null)
+        set(v) {
+            prefs.edit().apply { if (v.isNullOrBlank()) remove("wss") else putString("wss", v) }.apply()
+        }
+
     var clip: Boolean
         get() = prefs.getBoolean("clip", false)
         set(v) {
@@ -85,6 +95,7 @@ class LinkPrefs(context: Context) {
             remove("pcName")
             remove("host")
             remove("port")
+            remove("wss")
             if (id != null) remove("key_$id")
         }.commit()
     }
@@ -95,7 +106,8 @@ sealed class LinkStatus {
     data object Unpaired : LinkStatus()
     data class Waiting(val pc: String, val detail: String) : LinkStatus()
     data class Pairing(val pc: String, val code: Int?) : LinkStatus()
-    data class Linked(val pc: String) : LinkStatus()
+    /** `internet`: through the PC's internet address, not the local network. */
+    data class Linked(val pc: String, val internet: Boolean = false) : LinkStatus()
     data class Problem(val pc: String, val detail: String, val repair: Boolean) : LinkStatus()
 }
 

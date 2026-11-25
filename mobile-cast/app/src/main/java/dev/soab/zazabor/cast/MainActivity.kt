@@ -576,7 +576,7 @@ class MainActivity : Activity() {
                 R.color.warn, "Pairing with ${status.pc}…",
                 if (status.code != null) "Compare the code on both screens" else "Confirm the code on the PC",
             )
-            is LinkStatus.Linked -> Triple(R.color.good, "Linked to ${status.pc}", "Texts, calls, photos, files and notifications show on ${status.pc}. Control ${status.pc} from here, or let it control this phone.")
+            is LinkStatus.Linked -> Triple(R.color.good, if (status.internet) "Linked to ${status.pc} over the internet" else "Linked to ${status.pc}", "Texts, calls, photos, files and notifications show on ${status.pc}. Control ${status.pc} from here, or let it control this phone.")
             is LinkStatus.Problem -> Triple(R.color.bad, status.pc, status.detail)
         }
         linkDot.background = rounded(color(dot), dp(5).toFloat())

@@ -2,6 +2,7 @@ package dev.soab.zazabor.cast
 
 import dev.soab.zazabor.cast.RemoteProto.Input
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -200,5 +201,36 @@ class RemoteGesturesTest {
         assertEquals(3f, speedOf(100), 0.001f)
         assertTrue(speedOf(50) in 1.5f..2.5f)
         assertTrue(accelerate(30f, 1f) > accelerate(3f, 1f) * 10)
+    }
+
+    @Test
+    fun afterAPinchTheSameTwoFingersMoveThePicture() {
+        val v = Viewport(1600f, 900f, 1600f, 900f)
+        val e = GestureEngine(v, 1f, { sent += it })
+        e.onTouch(0, two(700f, 450f, 900f, 450f))
+        e.onTouch(16, two(500f, 450f, 1100f, 450f))
+        assertTrue(v.zoom > 2f)
+        val tx = v.tx
+        // Fingers keep their distance and slide right: the picture follows, no wheel.
+        e.onTouch(32, two(600f, 450f, 1200f, 450f))
+        e.onTouch(48, two(700f, 450f, 1300f, 450f))
+        assertTrue("moved ${v.tx - tx}", v.tx > tx + 150f)
+        assertTrue(sent.none { it is Input.Wheel })
+    }
+
+    @Test
+    fun aFingerRestingAtAnEdgeKeepsSlidingTheZoomedPicture() {
+        val v = Viewport(1600f, 900f, 1600f, 900f)
+        v.zoomAt(3f, 800f, 450f)
+        val e = GestureEngine(v, 1f, { sent += it })
+        e.onTouch(0, one(800f, 450f))
+        e.onTouch(16, one(1590f, 450f))
+        val tx = v.tx
+        repeat(10) { e.edgeTick() }
+        assertTrue("slid ${v.tx - tx}", v.tx < tx - 50f)
+        assertTrue(sent.last() is Input.MoveAbs)
+        // In the middle nothing slides.
+        e.onTouch(32, one(800f, 450f))
+        assertFalse(e.edgeTick())
     }
 }

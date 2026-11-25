@@ -124,7 +124,7 @@ class RemoteProtoTest {
             }
         }
         val got = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
-        val client = RemoteClient("127.0.0.1", server.localPort, token, "ab".repeat(16), linkKey)
+        val client = RemoteClient("127.0.0.1", server.localPort, null, token, "ab".repeat(16), linkKey)
         client.connect()
         client.start(object : RemoteClient.Listener {
             override fun onMessage(msg: JSONObject) {

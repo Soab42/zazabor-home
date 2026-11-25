@@ -173,14 +173,21 @@ class LinkService : Service() {
 
         val pcName: String? get() = instance?.linkedSession?.pcName
 
-        /** Where the remote channel dials: the linked PC's address and the key of the link. */
-        class Endpoint(val host: String, val pcName: String, val linkKey: ByteArray)
+        /**
+         * Where the remote channel dials: the linked PC's address and the key of the link. With
+         * `internet`, the link runs over the PC's internet address and the PC's answer to
+         * `remote.start` carries the `wss` address to dial instead.
+         */
+        class Endpoint(val host: String, val pcName: String, val linkKey: ByteArray, val internet: Boolean)
 
         fun endpoint(context: Context): Endpoint? {
-            val host = instance?.linkedHost ?: return null
+            val service = instance ?: return null
+            if (service.linkedSession == null) return null
+            val internet = service.linkedViaInternet
+            val host = service.linkedHost ?: if (internet) "" else return null
             val prefs = LinkPrefs(context)
             val key = prefs.pcId?.let { prefs.key(it) } ?: return null
-            return Endpoint(host, prefs.pcName, key)
+            return Endpoint(host, prefs.pcName, key, internet)
         }
 
         /** Asks the PC something and waits for its answer (blocks: not on the main thread). */
@@ -238,6 +245,7 @@ class LinkService : Service() {
     @Volatile private var session: Session? = null
     @Volatile private var linkedSession: Session? = null
     @Volatile private var linkedHost: String? = null
+    @Volatile private var linkedViaInternet = false
     @Volatile private var blocked = false
     @Volatile private var quickRetry = false
     @Volatile private var sentCaps: List<String> = emptyList()
@@ -367,30 +375,29 @@ class LinkService : Service() {
                 pause(60_000)
                 continue
             }
-            if (wifiNetworks.isEmpty()) {
-                setStatus(LinkStatus.Waiting(pc, "Waiting for Wi-Fi"))
-                pause(60_000)
-                continue
-            }
             val seen = found[pcId]
             val host = seen?.host ?: prefs.host
             val port = seen?.port ?: prefs.port
-            if (host == null) {
-                setStatus(LinkStatus.Waiting(pc, "Looking for $pc on this Wi-Fi…"))
-                pause(15_000)
+            val wss = prefs.wss
+            // Wi-Fi first; away from it (or when the PC isn't there), the PC's internet address.
+            val lanHost = host?.takeIf { wifiNetworks.isNotEmpty() }
+            if (lanHost == null && wss == null) {
+                if (wifiNetworks.isEmpty()) {
+                    setStatus(LinkStatus.Waiting(pc, "Waiting for Wi-Fi"))
+                    pause(60_000)
+                } else {
+                    setStatus(LinkStatus.Waiting(pc, "Looking for $pc on this Wi-Fi…"))
+                    pause(15_000)
+                }
                 continue
             }
             setStatus(LinkStatus.Waiting(pc, "Connecting…"))
             val started = SystemClock.elapsedRealtime()
             var problem: String? = null
             try {
-                val s = Link.handshake(open(host, port), Identity.info(this), false, prefs::key, null, { _, _, _ -> })
-                if (s.pcId != pcId) {
-                    s.close()
-                    throw IOException("A different PC answered at $host")
-                }
-                prefs.seen(s.pcName, host, port)
-                if (!runSession(s, host)) {
+                val (s, internet) = dialPc(lanHost, port, wss, pcId)
+                if (!internet && lanHost != null) prefs.seen(s.pcName, lanHost, port)
+                if (!runSession(s, if (internet) null else lanHost)) {
                     forgotUs(s.pcName)
                     continue
                 }
@@ -401,7 +408,7 @@ class LinkService : Service() {
                 problem = e.reason
             } catch (e: Exception) {
                 if (!running) break
-                problem = friendly(e, pc, host, port)
+                problem = friendly(e, pc, lanHost ?: host ?: "", port)
             }
             if (!running || pairRequest != null) continue
             if (SystemClock.elapsedRealtime() - started > 15_000) attempt = 0
@@ -416,6 +423,48 @@ class LinkService : Service() {
             setStatus(LinkStatus.Waiting(pc, (problem ?: "Disconnected") + ". Trying again in $delay s"))
             pause(delay * 1000L)
         }
+    }
+
+    /**
+     * Dials the paired PC: on the local network when there is a `host`, else (or when that
+     * fails) through its internet address. True with the session when it went over the internet.
+     */
+    private fun dialPc(host: String?, port: Int, wss: String?, pcId: String): Pair<Session, Boolean> {
+        if (host != null) {
+            try {
+                val s = Link.handshake(open(host, port), Identity.info(this), false, prefs::key, null, { _, _, _ -> })
+                if (s.pcId != pcId) {
+                    s.close()
+                    throw IOException("A different PC answered at $host")
+                }
+                return s to false
+            } catch (e: NeedsPairing) {
+                throw e
+            } catch (e: LinkRefused) {
+                throw e
+            } catch (e: Exception) {
+                if (wss == null || !running || pairRequest != null) throw e
+                Log.i(TAG, "not on the PC's network (${e.message}); trying its internet address")
+            }
+        }
+        val url = wss ?: throw IOException("No way to reach the PC")
+        setStatus(LinkStatus.Waiting(prefs.pcName, "Connecting over the internet…"))
+        val s = try {
+            val sock = WsSocket.open(url)
+            socket = sock
+            Link.handshake(sock, Identity.info(this), false, prefs::key, null, { _, _, _ -> })
+        } catch (e: NeedsPairing) {
+            throw e
+        } catch (e: LinkRefused) {
+            throw e
+        } catch (e: Exception) {
+            throw IOException(if (host == null) "Over the internet: ${e.message}" else "Not on ${prefs.pcName}'s network, and over the internet: ${e.message}", e)
+        }
+        if (s.pcId != pcId) {
+            s.close()
+            throw IOException("A different PC answered at ${java.net.URI(url).host}")
+        }
+        return s to true
     }
 
     private fun open(host: String, port: Int): Socket {
@@ -513,7 +562,7 @@ class LinkService : Service() {
     // ---- a live session ----
 
     /** Runs until the link drops. False when the PC closed it at once without a frame (it forgot us). */
-    private fun runSession(s: Session, host: String): Boolean {
+    private fun runSession(s: Session, host: String?): Boolean {
         session = s
         val started = SystemClock.elapsedRealtime()
         val framesBefore = s.framesReceived
@@ -521,8 +570,9 @@ class LinkService : Service() {
             sentCaps = caps(this)
             s.send(hello(sentCaps))
             linkedHost = host
+            linkedViaInternet = host == null
             linkedSession = s
-            setStatus(LinkStatus.Linked(s.pcName))
+            setStatus(LinkStatus.Linked(s.pcName, internet = host == null))
             events.post { startWatchers() }
             main.post { discovery?.stop() }
             s.run(::onMessage, ::onData)
@@ -532,12 +582,14 @@ class LinkService : Service() {
             linkedSession = null
             session = null
             linkedHost = null
+            linkedViaInternet = false
             Control.end(this, "The link dropped", tellPc = false)
             events.post { stopWatchers() }
             abortTransfers()
             if (running) main.post { discovery?.start() }
         }
-        return !(s.framesReceived == framesBefore && SystemClock.elapsedRealtime() - started < 10_000 && running && pairRequest == null)
+        // (Over the internet a quick drop is the network's doing, not a PC that forgot this phone.)
+        return host == null || !(s.framesReceived == framesBefore && SystemClock.elapsedRealtime() - started < 10_000 && running && pairRequest == null)
     }
 
     private fun hello(caps: List<String>): JSONObject {
@@ -602,6 +654,7 @@ class LinkService : Service() {
             "xfer.cancel" -> cancelTransfer(msg.optInt("xfer"))
             "re" -> asked.remove(msg.optInt("rid"))?.complete(msg)
             "hello", "status" -> {}
+            "net" -> prefs.wss = msg.optString("wss").takeIf { it.startsWith("wss://") }
             "ctl" -> Control.handle(msg)
             "control.stop" -> Control.end(this, "Stopped on the PC", tellPc = true)
             "clip" -> {
@@ -953,7 +1006,7 @@ class LinkService : Service() {
      * PC's address. The screen gets only a one-time token; the target stays here.
      */
     private fun startMirror(msg: JSONObject) {
-        val host = linkedHost ?: throw IOException("Not linked")
+        val host = linkedHost ?: throw IOException(if (linkedViaInternet) "Mirroring needs the phone on the PC's network" else "Not linked")
         val pcId = prefs.pcId ?: throw IOException("Not paired")
         val port = msg.optInt("port", 0).takeIf { it in 1..65535 } ?: Zmir.DEFAULT_PORT
         val name = prefs.pcName
@@ -994,6 +1047,8 @@ class LinkService : Service() {
                 wifiNetworks += network
                 quickRetry = true
                 poke()
+                // Linked over the internet and now on Wi-Fi: if the PC is right here, switch to it.
+                if (linkedViaInternet) probeLan(network)
             }
 
             override fun onLost(network: Network) {
@@ -1003,6 +1058,24 @@ class LinkService : Service() {
         }
         cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), cb)
         networkCallback = cb
+    }
+
+    private fun probeLan(network: Network) {
+        val host = found[prefs.pcId]?.host ?: prefs.host ?: return
+        val port = found[prefs.pcId]?.port ?: prefs.port
+        thread(name = "link-lan-probe", isDaemon = true) {
+            try {
+                Socket().use {
+                    network.bindSocket(it)
+                    it.connect(java.net.InetSocketAddress(host, port), 2000)
+                }
+                if (linkedViaInternet) {
+                    Log.i(TAG, "the PC is on this Wi-Fi; moving the link off the internet")
+                    dropConnection()
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     // ---- notifications ----
@@ -1047,7 +1120,7 @@ class LinkService : Service() {
     private fun linkNotification(s: LinkStatus): Notification {
         channels()
         val (title, text) = when (s) {
-            is LinkStatus.Linked -> "Linked to ${s.pc}" to "Texts, calls and notifications show on ${s.pc}"
+            is LinkStatus.Linked -> (if (s.internet) "Linked to ${s.pc} over the internet" else "Linked to ${s.pc}") to "Texts, calls and notifications show on ${s.pc}"
             is LinkStatus.Waiting -> "Zazabor Link" to s.detail
             is LinkStatus.Pairing -> "Pairing with ${s.pc}…" to "Compare the code on both screens"
             is LinkStatus.Problem -> "Zazabor Link" to s.detail

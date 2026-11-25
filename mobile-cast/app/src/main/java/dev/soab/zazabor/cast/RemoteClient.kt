@@ -22,6 +22,8 @@ import kotlin.concurrent.thread
 class RemoteClient(
     private val host: String,
     private val port: Int,
+    /** Over the internet path: the PC's `wss://…/ws/remote/<port>` (then `host` isn't used). */
+    private val wss: String?,
     private val token: ByteArray,
     private val phoneId: String,
     private val linkKey: ByteArray,
@@ -29,6 +31,7 @@ class RemoteClient(
     interface Listener {
         fun onMessage(msg: JSONObject)
         fun onVideo(plain: ByteArray, frame: RemoteProto.Video)
+        fun onAudio(plain: ByteArray) {}
         fun onClosed(reason: String?)
     }
 
@@ -46,7 +49,7 @@ class RemoteClient(
 
     /** Dials and handshakes (blocking). */
     fun connect(prepare: (Socket) -> Unit = {}) {
-        val s = Link.open(host, port, 5000, prepare)
+        val s = if (wss != null) WsSocket.open(wss) else Link.open(host, port, 5000, prepare)
         socket = s
         s.soTimeout = 10_000
         val inp = DataInputStream(BufferedInputStream(s.getInputStream(), 1 shl 16))
@@ -117,6 +120,7 @@ class RemoteClient(
                     if (plain.isEmpty()) continue
                     when (plain[0].toInt()) {
                         RemoteProto.K_VIDEO -> listener.onVideo(plain, RemoteProto.parseVideo(plain))
+                        RemoteProto.K_AUDIO -> listener.onAudio(plain)
                         RemoteProto.K_JSON -> listener.onMessage(JSONObject(String(plain, 1, plain.size - 1, Charsets.UTF_8)))
                     }
                 }
